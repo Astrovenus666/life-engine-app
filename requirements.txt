@@ -6,3 +6,4 @@ pycountry
 geonamescache
 timezonefinder
 pyswisseph
+geopy
