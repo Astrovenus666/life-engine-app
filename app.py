@@ -15,6 +15,9 @@ import pycountry
 import geonamescache
 from timezonefinder import TimezoneFinder
 
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+
 import plotly.graph_objects as go
 
 import astro_calc
@@ -30,8 +33,19 @@ from astro_calc import (
 # =========================================================
 # Streamlit config
 # =========================================================
-st.set_page_config(page_title="Life Path Graph", layout="wide")
+st.set_page_config(page_title="Life Engine App", layout="centered")
 st.title("Life Path Graph")
+
+# Mobile-friendly rendering
+MOBILE_FRIENDLY = st.toggle("Mobile-friendly layout", value=True)
+
+# Help iframes behave on small screens
+st.markdown("""
+<style>
+iframe { max-width: 100% !important; }
+</style>
+""", unsafe_allow_html=True)
+
 
 # =========================================================
 # Helpers
@@ -219,6 +233,52 @@ def load_place_data():
     df["countrycode"] = df["countrycode"].astype(str)
     return countries, country_name_to_code, df, tf
 
+
+@st.cache_resource
+def get_geocoder():
+    geolocator = Nominatim(user_agent="life-engine-app")
+    return geolocator
+
+# Respect Nominatim usage policy: throttle requests
+@st.cache_resource
+def get_geocode_limiter():
+    geolocator = get_geocoder()
+    return RateLimiter(geolocator.geocode, min_delay_seconds=1.0, swallow_exceptions=True)
+
+def search_places_nominatim(country_name: str, query: str, limit: int = 12):
+    q = norm_spaces(query)
+    if not q:
+        return []
+    # Add country hint to improve results
+    q2 = f"{q}, {country_name}" if country_name else q
+    geocode = get_geocode_limiter()
+    results = geocode(q2, exactly_one=False, addressdetails=True, limit=limit)
+    if not results:
+        return []
+    out = []
+    for r in results:
+        try:
+            raw = getattr(r, 'raw', {}) or {}
+            addr = raw.get('address', {}) or {}
+            city = addr.get('city') or addr.get('town') or addr.get('village') or addr.get('hamlet') or addr.get('municipality') or addr.get('county') or ''
+            state = addr.get('state') or addr.get('state_district') or addr.get('region') or ''
+            cc = (addr.get('country_code') or '').upper()
+            label = raw.get('display_name') or f"{city}, {state}".strip(', ')
+            lat = float(getattr(r, 'latitude'))
+            lon = float(getattr(r, 'longitude'))
+            out.append({'label': label, 'city': city or q, 'admin1': state or None, 'country_code': cc, 'lat': lat, 'lon': lon})
+        except Exception:
+            continue
+    # de-dup by lat/lon
+    seen = set()
+    uniq = []
+    for o in out:
+        key = (round(o['lat'], 6), round(o['lon'], 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(o)
+    return uniq
 def find_city_matches_stable(df: pd.DataFrame, country_code: str, query: str, limit: int = 50) -> pd.DataFrame:
     """
     STABLE + SIMPLE:
@@ -1184,39 +1244,68 @@ if "transit_mode_key" not in st.session_state:
     st.session_state["transit_mode_key"] = "birthday"
     st.session_state["transit_mode_idx"] = 0
 
-# City matches based on APPLIED filter only (stable)
+# Place matches (prefer Nominatim for towns/villages; fallback to offline cache)
 country_code = country_name_to_code[country]
-matches = find_city_matches_stable(city_df, country_code, st.session_state.get("city_query", "Hyderabad"), limit=60)
 
-if matches.empty:
-    st.warning("No matches. Try a simple city name (example: Hyderabad) and click Search city.")
-    st.stop()
+# If user pressed Search city, we store fresh Nominatim matches in session_state
+if do_search:
+    q = (st.session_state.get("draft_city", "") or "").strip()
+    st.session_state["city_query"] = q
+    st.session_state["place_matches"] = search_places_nominatim(country, q, limit=12)
 
-# Stable selection by geonameid (no jumping)
-if "selected_geonameid" not in st.session_state:
-    st.session_state["selected_geonameid"] = int(matches.iloc[0]["geonameid"])
+place_matches = st.session_state.get("place_matches", [])
 
-labels = []
-id_list = []
-for _, r in matches.iterrows():
-    pop = int(r.get("population", 0) or 0)
-    admin = r.get("admin1code", "") or ""
-    labels.append(f"{r['name']} | {admin} | pop:{pop:,}")
-    id_list.append(int(r["geonameid"]))
+if place_matches:
+    # Nominatim results (towns/villages included)
+    labels = [p["label"] for p in place_matches]
+    if "selected_place_idx" not in st.session_state:
+        st.session_state["selected_place_idx"] = 0
+    st.session_state["selected_place_idx"] = min(st.session_state["selected_place_idx"], len(labels) - 1)
 
-# keep current id if still in list, else choose first
-if st.session_state["selected_geonameid"] in id_list:
-    default_idx = id_list.index(st.session_state["selected_geonameid"])
+    sel_label = st.selectbox("Pick place", labels, index=st.session_state["selected_place_idx"])
+    sel_idx = labels.index(sel_label)
+    st.session_state["selected_place_idx"] = sel_idx
+    chosen = place_matches[sel_idx]
+
+    lat = float(chosen["lat"])
+    lon = float(chosen["lon"])
+    tz = tf.timezone_at(lat=lat, lng=lon) or "UTC"
+    tz = safe_tz(tz)
+    place = Place(country, country_code, chosen.get("city") or st.session_state.get("city_query",""), chosen.get("admin1"), lat, lon, tz)
+
 else:
-    default_idx = 0
-    st.session_state["selected_geonameid"] = id_list[0]
+    # Fallback: offline big cities database
+    matches = find_city_matches_stable(city_df, country_code, st.session_state.get("city_query", "Hyderabad"), limit=60)
 
-sel_label = st.selectbox("Pick place", labels, index=default_idx)
-sel_idx = labels.index(sel_label)
-st.session_state["selected_geonameid"] = id_list[sel_idx]
-sel_row = matches.iloc[sel_idx]
+    if matches.empty:
+        st.warning("No matches. Try a simple place name and click Search city.")
+        st.stop()
 
-place = resolve_place(country, country_code, sel_row, tf)
+    # Stable selection by geonameid (no jumping)
+    if "selected_geonameid" not in st.session_state:
+        st.session_state["selected_geonameid"] = int(matches.iloc[0]["geonameid"])
+
+    labels = []
+    id_list = []
+    for _, r in matches.iterrows():
+        pop = int(r.get("population", 0) or 0)
+        admin = r.get("admin1code", "") or ""
+        labels.append(f"{r['name']} | {admin} | pop:{pop:,}")
+        id_list.append(int(r["geonameid"]))
+
+    # keep current id if still in list, else choose first
+    if st.session_state["selected_geonameid"] in id_list:
+        default_idx = id_list.index(st.session_state["selected_geonameid"])
+    else:
+        default_idx = 0
+        st.session_state["selected_geonameid"] = id_list[0]
+
+    sel_label = st.selectbox("Pick place", labels, index=default_idx)
+    sel_idx = labels.index(sel_label)
+    st.session_state["selected_geonameid"] = id_list[sel_idx]
+    sel_row = matches.iloc[sel_idx]
+
+    place = resolve_place(country, country_code, sel_row, tf)
 
 st.caption(
     f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
@@ -1300,7 +1389,6 @@ with topR:
 # =========================================================
 # Birth + Progressed charts
 # =========================================================
-c1, c2 = st.columns(2, vertical_alignment="top")
 
 asc_sign = birth["houses"]["asc_sign"]
 center_birth = [
@@ -1311,10 +1399,13 @@ center_birth = [
     f"Nak: <b>{nak_pada}</b>",
 ]
 
-with c1:
-    render_south_chart("Birth Chart (South Indian)", birth["planets"], birth["houses"], center_birth, effective_mode, size_mode="half")
+if MOBILE_FRIENDLY:
+    render_south_chart(
+        "Birth Chart (South Indian)",
+        birth["planets"], birth["houses"], center_birth,
+        effective_mode, size_mode="half"
+    )
 
-with c2:
     center_prog = [
         f"<b>{name or '—'}</b>",
         f"{st.session_state['progression_type']}",
@@ -1326,8 +1417,27 @@ with c2:
         prog["planets"], prog["houses"], center_prog,
         effective_mode, size_mode="half"
     )
+else:
+    c1, c2 = st.columns(2, vertical_alignment="top")
+    with c1:
+        render_south_chart(
+            "Birth Chart (South Indian)",
+            birth["planets"], birth["houses"], center_birth,
+            effective_mode, size_mode="half"
+        )
 
-# =========================================================
+    with c2:
+        center_prog = [
+            f"<b>{name or '—'}</b>",
+            f"{st.session_state['progression_type']}",
+            f"Year: <b>{int(st.session_state['year'])}</b>",
+            f"{fmt_dmy(prog['dt_local'])} {prog['dt_local']:%H:%M:%S}",
+        ]
+        render_south_chart(
+            f"Progressed Chart ({int(st.session_state['year'])})",
+            prog["planets"], prog["houses"], center_prog,
+            effective_mode, size_mode="half"
+        )
 # Transit chart + BCP
 # =========================================================
 st.markdown("---")
@@ -1347,7 +1457,7 @@ center_tr = [
 render_south_chart(
     f"Transit Chart ({int(st.session_state['year'])})",
     tran["planets"], tran["houses"], center_tr,
-    effective_mode, size_mode="full"
+    effective_mode, size_mode=("half" if MOBILE_FRIENDLY else "full")
 )
 
 # =========================================================
