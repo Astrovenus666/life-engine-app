@@ -15,9 +15,6 @@ import pycountry
 import geonamescache
 from timezonefinder import TimezoneFinder
 
-from geopy.geocoders import Nominatim
-from geopy.extra.rate_limiter import RateLimiter
-
 import plotly.graph_objects as go
 
 import astro_calc
@@ -33,19 +30,8 @@ from astro_calc import (
 # =========================================================
 # Streamlit config
 # =========================================================
-st.set_page_config(page_title="Life Engine App", layout="centered")
+st.set_page_config(page_title="Life Path Graph", layout="wide")
 st.title("Life Path Graph")
-
-# Mobile-friendly rendering
-MOBILE_FRIENDLY = st.toggle("Mobile-friendly layout", value=True)
-
-# Help iframes behave on small screens
-st.markdown("""
-<style>
-iframe { max-width: 100% !important; }
-</style>
-""", unsafe_allow_html=True)
-
 
 # =========================================================
 # Helpers
@@ -233,52 +219,6 @@ def load_place_data():
     df["countrycode"] = df["countrycode"].astype(str)
     return countries, country_name_to_code, df, tf
 
-
-@st.cache_resource
-def get_geocoder():
-    geolocator = Nominatim(user_agent="life-engine-app")
-    return geolocator
-
-# Respect Nominatim usage policy: throttle requests
-@st.cache_resource
-def get_geocode_limiter():
-    geolocator = get_geocoder()
-    return RateLimiter(geolocator.geocode, min_delay_seconds=1.0, swallow_exceptions=True)
-
-def search_places_nominatim(country_name: str, query: str, limit: int = 12):
-    q = norm_spaces(query)
-    if not q:
-        return []
-    # Add country hint to improve results
-    q2 = f"{q}, {country_name}" if country_name else q
-    geocode = get_geocode_limiter()
-    results = geocode(q2, exactly_one=False, addressdetails=True, limit=limit)
-    if not results:
-        return []
-    out = []
-    for r in results:
-        try:
-            raw = getattr(r, 'raw', {}) or {}
-            addr = raw.get('address', {}) or {}
-            city = addr.get('city') or addr.get('town') or addr.get('village') or addr.get('hamlet') or addr.get('municipality') or addr.get('county') or ''
-            state = addr.get('state') or addr.get('state_district') or addr.get('region') or ''
-            cc = (addr.get('country_code') or '').upper()
-            label = raw.get('display_name') or f"{city}, {state}".strip(', ')
-            lat = float(getattr(r, 'latitude'))
-            lon = float(getattr(r, 'longitude'))
-            out.append({'label': label, 'city': city or q, 'admin1': state or None, 'country_code': cc, 'lat': lat, 'lon': lon})
-        except Exception:
-            continue
-    # de-dup by lat/lon
-    seen = set()
-    uniq = []
-    for o in out:
-        key = (round(o['lat'], 6), round(o['lon'], 6))
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(o)
-    return uniq
 def find_city_matches_stable(df: pd.DataFrame, country_code: str, query: str, limit: int = 50) -> pd.DataFrame:
     """
     STABLE + SIMPLE:
@@ -319,13 +259,6 @@ def bcp_house_from_age(age: int) -> int:
 def bcp_age_for_house(current_age: int, current_house: int, target_house: int) -> int:
     diff = (current_house - target_house) % 12
     return current_age - diff
-
-
-def age_on(dt_local: datetime, birth_local: datetime) -> int:
-    """Full years elapsed at dt_local."""
-    years = dt_local.year - birth_local.year
-    before_bday = (dt_local.month, dt_local.day) < (birth_local.month, birth_local.day)
-    return years - int(before_bday)
 
 # =========================================================
 # Panchang helpers (compact)
@@ -841,7 +774,6 @@ def generate_career_df(
     lon: float,
     sid_mode_key: str,
     progression_type: str,
-    tzname: str,
     max_years: int = 120,
     step_months: int = 3,
 ) -> pd.DataFrame:
@@ -869,10 +801,8 @@ def generate_career_df(
         if moon_lon is not None:
             natal_moon_sign = SIGNS[int((moon_lon % 360.0) // 30)]
 
-    functional_malefics = set(dusthana_lords) | {badhaka_lord, third_lord}
-
-    def is_functional_malefic(pl: str) -> bool:
-        return pl in functional_malefics
+    def is_problem_lord(pl: str) -> bool:
+        return (pl in dusthana_lords) or (pl == badhaka_lord) or (pl == third_lord)
 
     rows = []
     total_months = max_years * 12
@@ -901,6 +831,7 @@ def generate_career_df(
 
         md, ad, md_obj, ad_obj = find_current_md_ad(md_periods, dt_local)
 
+        tzname = st.session_state.get("tzname", "UTC")
         dt_utc = dt_local.replace(tzinfo=ZoneInfo(tzname)).astimezone(ZoneInfo("UTC"))
         trans_planets = astro_calc.calc_sidereal_planets(dt_utc, sid_mode=sid_mode_key)
         trans_sat = next((p for p in trans_planets if p.name == "Saturn"), None)
@@ -952,7 +883,7 @@ def generate_career_df(
             asp, delta = res
             w = tri_weight(delta) * 1.6
             if asp in ("TRINE", "SEXT", "CONJ"):
-                if not is_functional_malefic(lord):
+                if not is_problem_lord(lord):
                     score += w
             elif asp in ("SQUARE", "OPP"):
                 score -= 0.6 * w
@@ -988,8 +919,8 @@ def generate_career_df(
                 if w <= 0:
                     continue
 
-                p_prob = is_functional_malefic(p_name)
-                n_prob = is_functional_malefic(n_name)
+                p_prob = is_problem_lord(p_name)
+                n_prob = is_problem_lord(n_name)
 
                 if asp in ("TRINE", "SEXT"):
                     if (p_name in BENEFIC) and not p_prob:
@@ -1090,7 +1021,7 @@ def recompute_all():
     st.session_state["birth"] = birth
 
     year = int(st.session_state.get("year", datetime.now().year))
-    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, transit_mode=st.session_state.get("transit_mode_key", "birthday"))
+    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
 
     if progression_type.startswith("Secondary"):
         st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
@@ -1112,7 +1043,6 @@ def recompute_all():
         lon=lon,
         sid_mode_key=sid_mode_key,
         progression_type=progression_type,
-        tzname=st.session_state.get("tzname","UTC"),
         max_years=120,
         step_months=3,
     )
@@ -1129,7 +1059,7 @@ def recompute_year_only():
         return
 
     year = int(st.session_state.get("year", datetime.now().year))
-    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, transit_mode=st.session_state.get("transit_mode_key", "birthday"))
+    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
     if progression_type.startswith("Secondary"):
         st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
     else:
@@ -1146,13 +1076,6 @@ default_dob = st.session_state.get("dob", date(2000, 1, 1))
 default_tob_text = st.session_state.get("tob_text", "")
 default_country = st.session_state.get("country", "India")
 
-# City search: keep a draft (user types) and apply only on button click (stable)
-if "city_query" not in st.session_state or not str(st.session_state.get("city_query") or "").strip():
-    st.session_state["city_query"] = "Hyderabad"
-if "draft_city" not in st.session_state:
-    st.session_state["draft_city"] = st.session_state["city_query"]
-
-
 # IMPORTANT: We keep a *draft* city input (user types) and only apply it when they click Search.
 draft_city = st.session_state.get("draft_city", st.session_state.get("city_query", "Hyderabad"))
 applied_city = st.session_state.get("city_query", "Hyderabad")
@@ -1161,7 +1084,13 @@ row1 = st.columns([1.2, 1.2, 1.4, 2.0, 2.2, 1.0], vertical_alignment="bottom")
 with row1[0]:
     name = st.text_input("Name", value=default_name, placeholder="Enter name…")
 with row1[1]:
-    dob = st.date_input("DOB", value=default_dob, format="DD/MM/YYYY")
+    dob = st.date_input(
+        "DOB",
+        value=default_dob,
+        min_value=date(1800, 1, 1),
+        max_value=date(2100, 12, 31),
+        format="DD/MM/YYYY",
+    )
 with row1[2]:
     tob_text = st.text_input("TOB", value=default_tob_text, placeholder="HH:MM or HH:MM:SS")
 with row1[3]:
@@ -1171,6 +1100,7 @@ with row1[3]:
 with row1[4]:
     draft_city = st.text_input(
         "City search (type, then click Search)",
+        value=draft_city,
         placeholder="Type city… (e.g., Hyderabad)",
         key="draft_city",
     )
@@ -1196,7 +1126,7 @@ if tob_val is None:
     st.warning("Enter TOB in HH:MM or HH:MM:SS (example: 22:01 or 22:01:05).")
     st.stop()
 
-row2 = st.columns([1.35, 1.35, 1.20, 1.60, 1.10], vertical_alignment="bottom")
+row2 = st.columns([1.6, 1.6, 1.6, 1.2], vertical_alignment="bottom")
 with row2[0]:
     sid_mode = st.selectbox(
         "Ayanamsa",
@@ -1223,89 +1153,43 @@ with row2[2]:
         on_change=recompute_year_only,
     )
 with row2[3]:
-    st.selectbox(
-        "Transit date",
-        ["Birthday (same as birth)", "Jan 1 (12:00)", "Jul 1 (12:00)"],
-        index=int(st.session_state.get("transit_mode_idx", 0) or 0),
-        key="transit_mode_ui",
-        on_change=recompute_year_only,
-    )
-    # persist a simple internal key
-    _tm = (st.session_state.get("transit_mode_ui") or "Birthday (same as birth)")
-    st.session_state["transit_mode_idx"] = ["Birthday (same as birth)", "Jan 1 (12:00)", "Jul 1 (12:00)"].index(_tm)
-    st.session_state["transit_mode_key"] = "birthday" if _tm.startswith("Birthday") else ("jan1_noon" if _tm.startswith("Jan") else "jul1_noon")
-with row2[4]:
     compute_now = st.button("Compute", type="primary", use_container_width=True)
 
 sid_mode_key = "KRISHNAMURTI" if "KRISHNAMURTI" in sid_mode else "LAHIRI"
 
-# default transit mode
-if "transit_mode_key" not in st.session_state:
-    st.session_state["transit_mode_key"] = "birthday"
-    st.session_state["transit_mode_idx"] = 0
-
-# Place matches (prefer Nominatim for towns/villages; fallback to offline cache)
+# City matches based on APPLIED filter only (stable)
 country_code = country_name_to_code[country]
+matches = find_city_matches_stable(city_df, country_code, st.session_state.get("city_query", "Hyderabad"), limit=60)
 
-# If user pressed Search city, we store fresh Nominatim matches in session_state
-if do_search:
-    q = (st.session_state.get("draft_city", "") or "").strip()
-    st.session_state["city_query"] = q
-    st.session_state["place_matches"] = search_places_nominatim(country, q, limit=12)
+if matches.empty:
+    st.warning("No matches. Try a simple city name (example: Hyderabad) and click Search city.")
+    st.stop()
 
-place_matches = st.session_state.get("place_matches", [])
+# Stable selection by geonameid (no jumping)
+if "selected_geonameid" not in st.session_state:
+    st.session_state["selected_geonameid"] = int(matches.iloc[0]["geonameid"])
 
-if place_matches:
-    # Nominatim results (towns/villages included)
-    labels = [p["label"] for p in place_matches]
-    if "selected_place_idx" not in st.session_state:
-        st.session_state["selected_place_idx"] = 0
-    st.session_state["selected_place_idx"] = min(st.session_state["selected_place_idx"], len(labels) - 1)
+labels = []
+id_list = []
+for _, r in matches.iterrows():
+    pop = int(r.get("population", 0) or 0)
+    admin = r.get("admin1code", "") or ""
+    labels.append(f"{r['name']} | {admin} | pop:{pop:,}")
+    id_list.append(int(r["geonameid"]))
 
-    sel_label = st.selectbox("Pick place", labels, index=st.session_state["selected_place_idx"])
-    sel_idx = labels.index(sel_label)
-    st.session_state["selected_place_idx"] = sel_idx
-    chosen = place_matches[sel_idx]
-
-    lat = float(chosen["lat"])
-    lon = float(chosen["lon"])
-    tz = tf.timezone_at(lat=lat, lng=lon) or "UTC"
-    tz = safe_tz(tz)
-    place = Place(country, country_code, chosen.get("city") or st.session_state.get("city_query",""), chosen.get("admin1"), lat, lon, tz)
-
+# keep current id if still in list, else choose first
+if st.session_state["selected_geonameid"] in id_list:
+    default_idx = id_list.index(st.session_state["selected_geonameid"])
 else:
-    # Fallback: offline big cities database
-    matches = find_city_matches_stable(city_df, country_code, st.session_state.get("city_query", "Hyderabad"), limit=60)
+    default_idx = 0
+    st.session_state["selected_geonameid"] = id_list[0]
 
-    if matches.empty:
-        st.warning("No matches. Try a simple place name and click Search city.")
-        st.stop()
+sel_label = st.selectbox("Pick place", labels, index=default_idx)
+sel_idx = labels.index(sel_label)
+st.session_state["selected_geonameid"] = id_list[sel_idx]
+sel_row = matches.iloc[sel_idx]
 
-    # Stable selection by geonameid (no jumping)
-    if "selected_geonameid" not in st.session_state:
-        st.session_state["selected_geonameid"] = int(matches.iloc[0]["geonameid"])
-
-    labels = []
-    id_list = []
-    for _, r in matches.iterrows():
-        pop = int(r.get("population", 0) or 0)
-        admin = r.get("admin1code", "") or ""
-        labels.append(f"{r['name']} | {admin} | pop:{pop:,}")
-        id_list.append(int(r["geonameid"]))
-
-    # keep current id if still in list, else choose first
-    if st.session_state["selected_geonameid"] in id_list:
-        default_idx = id_list.index(st.session_state["selected_geonameid"])
-    else:
-        default_idx = 0
-        st.session_state["selected_geonameid"] = id_list[0]
-
-    sel_label = st.selectbox("Pick place", labels, index=default_idx)
-    sel_idx = labels.index(sel_label)
-    st.session_state["selected_geonameid"] = id_list[sel_idx]
-    sel_row = matches.iloc[sel_idx]
-
-    place = resolve_place(country, country_code, sel_row, tf)
+place = resolve_place(country, country_code, sel_row, tf)
 
 st.caption(
     f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
@@ -1389,6 +1273,7 @@ with topR:
 # =========================================================
 # Birth + Progressed charts
 # =========================================================
+c1, c2 = st.columns(2, vertical_alignment="top")
 
 asc_sign = birth["houses"]["asc_sign"]
 center_birth = [
@@ -1399,13 +1284,10 @@ center_birth = [
     f"Nak: <b>{nak_pada}</b>",
 ]
 
-if MOBILE_FRIENDLY:
-    render_south_chart(
-        "Birth Chart (South Indian)",
-        birth["planets"], birth["houses"], center_birth,
-        effective_mode, size_mode="half"
-    )
+with c1:
+    render_south_chart("Birth Chart (South Indian)", birth["planets"], birth["houses"], center_birth, effective_mode, size_mode="half")
 
+with c2:
     center_prog = [
         f"<b>{name or '—'}</b>",
         f"{st.session_state['progression_type']}",
@@ -1417,27 +1299,8 @@ if MOBILE_FRIENDLY:
         prog["planets"], prog["houses"], center_prog,
         effective_mode, size_mode="half"
     )
-else:
-    c1, c2 = st.columns(2, vertical_alignment="top")
-    with c1:
-        render_south_chart(
-            "Birth Chart (South Indian)",
-            birth["planets"], birth["houses"], center_birth,
-            effective_mode, size_mode="half"
-        )
 
-    with c2:
-        center_prog = [
-            f"<b>{name or '—'}</b>",
-            f"{st.session_state['progression_type']}",
-            f"Year: <b>{int(st.session_state['year'])}</b>",
-            f"{fmt_dmy(prog['dt_local'])} {prog['dt_local']:%H:%M:%S}",
-        ]
-        render_south_chart(
-            f"Progressed Chart ({int(st.session_state['year'])})",
-            prog["planets"], prog["houses"], center_prog,
-            effective_mode, size_mode="half"
-        )
+# =========================================================
 # Transit chart + BCP
 # =========================================================
 st.markdown("---")
@@ -1457,7 +1320,7 @@ center_tr = [
 render_south_chart(
     f"Transit Chart ({int(st.session_state['year'])})",
     tran["planets"], tran["houses"], center_tr,
-    effective_mode, size_mode=("half" if MOBILE_FRIENDLY else "full")
+    effective_mode, size_mode="full"
 )
 
 # =========================================================
