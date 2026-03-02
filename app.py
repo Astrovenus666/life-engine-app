@@ -15,6 +15,8 @@ import pycountry
 import geonamescache
 from timezonefinder import TimezoneFinder
 
+from geopy.geocoders import Nominatim
+
 import plotly.graph_objects as go
 
 import astro_calc
@@ -193,6 +195,12 @@ SOUTH_GRID = [
 # =========================================================
 # Place data (cached)
 # =========================================================
+
+@st.cache_resource
+def get_geocoder():
+    # Nominatim (OpenStreetMap) fallback for towns/villages not in geonamescache
+    return Nominatim(user_agent="life_engine_app", timeout=10)
+
 @st.cache_resource
 def load_place_data():
     gc = geonamescache.GeonamesCache()
@@ -1085,12 +1093,12 @@ with row1[0]:
     name = st.text_input("Name", value=default_name, placeholder="Enter name…")
 with row1[1]:
     dob = st.date_input(
-        "DOB",
-        value=default_dob,
-        min_value=date(1800, 1, 1),
-        max_value=date(2100, 12, 31),
-        format="DD/MM/YYYY",
-    )
+    "DOB",
+    value=default_dob,
+    min_value=date(1800, 1, 1),
+    max_value=date(2100, 12, 31),
+    format="DD/MM/YYYY",
+)
 with row1[2]:
     tob_text = st.text_input("TOB", value=default_tob_text, placeholder="HH:MM or HH:MM:SS")
 with row1[3]:
@@ -1162,54 +1170,120 @@ country_code = country_name_to_code[country]
 matches = find_city_matches_stable(city_df, country_code, st.session_state.get("city_query", "Hyderabad"), limit=60)
 
 if matches.empty:
-    st.warning("No matches. Try a simple city name (example: Hyderabad) and click Search city.")
-    st.stop()
+    # Fallback: Nominatim (OpenStreetMap) for towns/villages not present in geonamescache
+    q_city = str(st.session_state.get("city_query", "") or "").strip()
+    if not q_city:
+        st.warning("No matches. Type a place name and click Search city.")
+        st.stop()
 
-# Stable selection by geonameid (no jumping)
-if "selected_geonameid" not in st.session_state:
-    st.session_state["selected_geonameid"] = int(matches.iloc[0]["geonameid"])
+    geocoder = get_geocoder()
+    try:
+        # Use country context to improve accuracy
+        q = f"{q_city}, {country}"
+        hits = geocoder.geocode(q, exactly_one=False, limit=10, addressdetails=True)
+    except Exception:
+        hits = None
 
-labels = []
-id_list = []
-for _, r in matches.iterrows():
-    pop = int(r.get("population", 0) or 0)
-    admin = r.get("admin1code", "") or ""
-    labels.append(f"{r['name']} | {admin} | pop:{pop:,}")
-    id_list.append(int(r["geonameid"]))
+    if not hits:
+        st.warning("No matches found (including fallback search). Try adding state/district (e.g., Karimnagar, Telangana).")
+        st.stop()
 
-# keep current id if still in list, else choose first
-if st.session_state["selected_geonameid"] in id_list:
-    default_idx = id_list.index(st.session_state["selected_geonameid"])
+    nom_rows = []
+    for h in hits:
+        try:
+            lat_h = float(getattr(h, "latitude", None))
+            lon_h = float(getattr(h, "longitude", None))
+        except Exception:
+            continue
+        disp = getattr(h, "address", None) or getattr(h, "raw", {}).get("display_name", "") or str(h)
+        nom_rows.append({"label": disp, "lat": lat_h, "lon": lon_h})
+
+    if not nom_rows:
+        st.warning("Fallback search returned results but coordinates were unavailable.")
+        st.stop()
+
+    nom_labels = [r["label"] for r in nom_rows]
+    pick = st.selectbox("Pick place (fallback search)", nom_labels, index=0)
+    chosen = nom_rows[nom_labels.index(pick)]
+
+    # Build a Place directly
+    tz = tf.timezone_at(lat=chosen["lat"], lng=chosen["lon"]) or "UTC"
+    tz = safe_tz(tz)
+
+    place = Place(
+        country_name=country,
+        country_code=country_name_to_code.get(country, ""),
+        city_name=pick.split(",")[0].strip() or q_city,
+        admin1_code=None,
+        lat=float(chosen["lat"]),
+        lon=float(chosen["lon"]),
+        timezone=tz,
+    )
+
+    st.caption(
+        f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
+        f"Lat: **{place.lat:.6f}** | Lon: **{place.lon:.6f}** | "
+        f"DOB: **{fmt_dmy(dob)}** | TOB: **{tob_val.strftime('%H:%M:%S')}**"
+    )
+
+    birth_local = datetime.combine(dob, tob_val).replace(tzinfo=ZoneInfo(place.timezone))
+
+    # Persist inputs
+    st.session_state["name"] = name
+    st.session_state["dob"] = dob
+    st.session_state["tob_text"] = tob_text
+    st.session_state["country"] = country
+    st.session_state["lat"] = place.lat
+    st.session_state["lon"] = place.lon
+    st.session_state["sid_mode_key"] = sid_mode_key
+    st.session_state["tzname"] = place.timezone
+    st.session_state["birth_local"] = birth_local
 else:
-    default_idx = 0
-    st.session_state["selected_geonameid"] = id_list[0]
 
-sel_label = st.selectbox("Pick place", labels, index=default_idx)
-sel_idx = labels.index(sel_label)
-st.session_state["selected_geonameid"] = id_list[sel_idx]
-sel_row = matches.iloc[sel_idx]
+    # Stable selection by geonameid (no jumping)
+    if "selected_geonameid" not in st.session_state:
+        st.session_state["selected_geonameid"] = int(matches.iloc[0]["geonameid"])
 
-place = resolve_place(country, country_code, sel_row, tf)
+    labels = []
+    id_list = []
+    for _, r in matches.iterrows():
+        pop = int(r.get("population", 0) or 0)
+        admin = r.get("admin1code", "") or ""
+        labels.append(f"{r['name']} | {admin} | pop:{pop:,}")
+        id_list.append(int(r["geonameid"]))
 
-st.caption(
-    f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
-    f"Lat: **{place.lat:.6f}** | Lon: **{place.lon:.6f}** | "
-    f"DOB: **{fmt_dmy(dob)}** | TOB: **{tob_val.strftime('%H:%M:%S')}**"
-)
+    # keep current id if still in list, else choose first
+    if st.session_state["selected_geonameid"] in id_list:
+        default_idx = id_list.index(st.session_state["selected_geonameid"])
+    else:
+        default_idx = 0
+        st.session_state["selected_geonameid"] = id_list[0]
 
-birth_local = datetime.combine(dob, tob_val).replace(tzinfo=ZoneInfo(place.timezone))
+    sel_label = st.selectbox("Pick place", labels, index=default_idx)
+    sel_idx = labels.index(sel_label)
+    st.session_state["selected_geonameid"] = id_list[sel_idx]
+    sel_row = matches.iloc[sel_idx]
 
-# Persist inputs
-st.session_state["name"] = name
-st.session_state["dob"] = dob
-st.session_state["tob_text"] = tob_text
-st.session_state["country"] = country
-st.session_state["lat"] = place.lat
-st.session_state["lon"] = place.lon
-st.session_state["sid_mode_key"] = sid_mode_key
-st.session_state["tzname"] = place.timezone
-st.session_state["birth_local"] = birth_local
+    place = resolve_place(country, country_code, sel_row, tf)
 
+    st.caption(
+        f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
+        f"Lat: **{place.lat:.6f}** | Lon: **{place.lon:.6f}** | "
+        f"DOB: **{fmt_dmy(dob)}** | TOB: **{tob_val.strftime('%H:%M:%S')}**"
+    )
+
+    birth_local = datetime.combine(dob, tob_val).replace(tzinfo=ZoneInfo(place.timezone))
+
+    # Persist inputs
+    st.session_state["name"] = name
+    st.session_state["dob"] = dob
+    st.session_state["tob_text"] = tob_text
+    st.session_state["country"] = country
+    st.session_state["lat"] = place.lat
+    st.session_state["lon"] = place.lon
+    st.session_state["sid_mode_key"] = sid_mode_key
+    st.session_state["tzname"] = place.timezone
+    st.session_state["birth_local"] = birth_local
 # =========================================================
 # Compute
 # =========================================================
