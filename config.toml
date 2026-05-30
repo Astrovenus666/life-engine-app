@@ -1,0 +1,13 @@
+# Streamlit configuration — locks the app to dark mode and trims the toolbar.
+# Lives at:  .streamlit/config.toml
+
+[theme]
+base = "dark"
+
+[client]
+toolbarMode = "minimal"
+
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = true
