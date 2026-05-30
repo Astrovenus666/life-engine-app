@@ -37,7 +37,7 @@ PLANETS = [
     ("Venus", swe.VENUS),
     ("Saturn", swe.SATURN),
     ("Uranus", swe.URANUS),
-    ("Rahu", swe.TRUE_NODE),
+    ("Rahu", swe.MEAN_NODE),
 ]
 
 # ----------------------------
@@ -80,26 +80,6 @@ def swe_julday_utc(dt_utc: datetime) -> float:
 def years_to_td(years: float) -> timedelta:
     return timedelta(days=years * DAYS_PER_YEAR)
 
-# ----------------------------
-# Date helpers
-# ----------------------------
-def safe_replace_local(dt_local: datetime, *, year: int | None = None, month: int | None = None, day: int | None = None,
-                      hour: int | None = None, minute: int | None = None, second: int | None = None) -> datetime:
-    """Safe datetime.replace for local datetimes.
-    Fixes Feb 29 / day overflow by clamping to the last valid day of the target month.
-    """
-    y = dt_local.year if year is None else int(year)
-    m = dt_local.month if month is None else int(month)
-    d = dt_local.day if day is None else int(day)
-    hh = dt_local.hour if hour is None else int(hour)
-    mm = dt_local.minute if minute is None else int(minute)
-    ss = dt_local.second if second is None else int(second)
-    import calendar as _cal
-    last = _cal.monthrange(y, m)[1]
-    d = min(max(1, d), last)
-    return dt_local.replace(year=y, month=m, day=d, hour=hh, minute=mm, second=ss)
-
-
 def order_from_lord(lord: str) -> list[str]:
     i = VIM_ORDER.index(lord)
     return VIM_ORDER[i:] + VIM_ORDER[:i]
@@ -123,7 +103,9 @@ def _calc_ut_xx(jd: float, pid: int, flags: int):
 def calc_sidereal_planets(dt_utc: datetime, sid_mode: str = "KRISHNAMURTI") -> list[PlanetPos]:
     set_sidereal_mode(sid_mode)
     jd = swe_julday_utc(dt_utc)
-    flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+    # FLG_SPEED is REQUIRED for xx[3] (longitude speed) to be populated.
+    # Without it, speed reads as 0 and retrograde detection never triggers.
+    flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED
 
     out: list[PlanetPos] = []
     rahu_lon = None
@@ -246,6 +228,104 @@ def build_subperiods(parent: DashaPeriod, level: str) -> list[DashaPeriod]:
     return out
 
 # ----------------------------
+# Divisional charts (Vargas) — VERIFIED against RVA reference (D9, D10)
+# ----------------------------
+# General rule for a varga of N divisions:
+#   span = 30 / N  degrees per part
+#   part = floor(deg_in_sign / span)            -> 0..N-1
+#   varga_deg = (deg_in_sign - part*span)/span * 30   (scaled into a full 30 sign)
+#   varga_sign = (start_sign + part) mod 12
+# where start_sign depends on the varga's classical rule.
+_MOVABLE = {"Aries", "Cancer", "Libra", "Capricorn"}
+_FIXED   = {"Taurus", "Leo", "Scorpio", "Aquarius"}
+# (dual/common signs: everything else)
+
+def _varga_start_d9(sign_idx: int, sign_name: str) -> int:
+    # D9: movable -> from same sign; fixed -> 9th from it; dual -> 5th from it
+    if sign_name in _MOVABLE:
+        return sign_idx
+    if sign_name in _FIXED:
+        return (sign_idx + 8) % 12
+    return (sign_idx + 4) % 12
+
+def _varga_start_d10(sign_idx: int, sign_name: str) -> int:
+    # D10: odd sign -> from same; even sign -> from 9th
+    # (Aries is sign 1 = odd, index 0)
+    return sign_idx if (sign_idx % 2 == 0) else (sign_idx + 8) % 12
+
+# Registry: code -> (num_divisions, start_rule)
+VARGA_RULES = {
+    "D1":  (1,  lambda i, n: i),
+    "D9":  (9,  _varga_start_d9),
+    "D10": (10, _varga_start_d10),
+}
+
+def varga_position(lon: float, varga: str) -> tuple[str, float, float]:
+    """Map an absolute sidereal longitude to (varga_sign, varga_deg_in_sign, varga_abs_lon)."""
+    lon = norm360(lon)
+    sign_idx = int(lon // 30)
+    deg_in_sign = lon - sign_idx * 30.0
+    n, start_rule = VARGA_RULES[varga]
+    if n == 1:
+        return SIGNS[sign_idx], deg_in_sign, lon
+    span = 30.0 / n
+    part = int(deg_in_sign // span)
+    if part >= n:
+        part = n - 1
+    frac = (deg_in_sign - part * span) / span
+    start = start_rule(sign_idx, SIGNS[sign_idx])
+    v_idx = (start + part) % 12
+    v_deg = frac * 30.0
+    return SIGNS[v_idx], v_deg, v_idx * 30.0 + v_deg
+
+def divisional_chart(chart: dict, varga: str) -> dict:
+    """
+    Return a new chart dict (planets + houses) remapped to the given varga.
+    D1 returns the chart unchanged. Planets AND the ascendant are remapped, so
+    house placement stays correct. View-only: not used by the graph engine.
+    """
+    if varga == "D1":
+        return chart
+
+    new_planets = []
+    for p in chart["planets"]:
+        vs, vd, vlon = varga_position(p.lon, varga)
+        new_planets.append(PlanetPos(
+            name=p.name, lon=vlon, sign=vs, deg_in_sign=vd,
+            lon_speed=p.lon_speed, retro=p.retro,
+        ))
+
+    h = chart["houses"]
+    asc_vs, asc_vd, asc_vlon = varga_position(h["asc_sid"], varga)
+    mc_vs, mc_vd, mc_vlon = varga_position(h.get("mc_sid", 0.0), varga)
+
+    # Whole-sign cusps from the varga ascendant (divisional charts use whole-sign houses)
+    asc_idx = SIGNS.index(asc_vs)
+    cusp_info = {}
+    cusps_sid = [0.0]
+    for house in range(1, 13):
+        s_idx = (asc_idx + (house - 1)) % 12
+        lon_c = s_idx * 30.0
+        cusps_sid.append(lon_c)
+        cusp_info[house] = {"lon": lon_c, "sign": SIGNS[s_idx], "deg": 0.0}
+
+    new_houses = dict(h)  # copy, then override the varga-specific fields
+    new_houses.update({
+        "asc_sid": asc_vlon, "asc_sign": asc_vs, "asc_deg": asc_vd,
+        "mc_sid": mc_vlon, "mc_sign": mc_vs, "mc_deg": mc_vd,
+        "cusps_sid": cusps_sid, "cusp_info": cusp_info,
+    })
+    # Divisional charts are reference-only: drop any BCP overlay so it never
+    # implies the activation logic runs on a varga.
+    new_houses.pop("bcp_house", None)
+    new_houses.pop("bcp_age", None)
+
+    out = dict(chart)
+    out["planets"] = new_planets
+    out["houses"] = new_houses
+    return out
+
+# ----------------------------
 # Public API
 # ----------------------------
 def compute_birth_chart(birth_local: datetime, lat: float, lon_east: float, sid_mode: str = "KRISHNAMURTI") -> dict:
@@ -273,38 +353,25 @@ def compute_birth_chart(birth_local: datetime, lat: float, lon_east: float, sid_
         "sid_mode": sid_mode,
     }
 
-def compute_transit_chart(
-    birth_local: datetime,
-    lat: float,
-    lon_east: float,
-    transit_year: int,
-    sid_mode: str = "KRISHNAMURTI",
-    transit_mode: str = "birthday",
-) -> dict:
-    """Transit chart for a chosen anchor date in the transit_year.
+def _target_date(birth_local: datetime, year: int, month: int | None) -> datetime:
+    """Build the local target date for a given year (and optional month),
+    keeping the birth day-of-month. Falls back safely if the day overflows
+    a short month (e.g. birth day 31 in a 30-day month)."""
+    import calendar
+    m = int(month) if month else birth_local.month
+    last_day = calendar.monthrange(int(year), m)[1]
+    day = min(birth_local.day, last_day)
+    return birth_local.replace(year=int(year), month=m, day=day)
 
-    transit_mode:
-      - 'birthday' : same month/day/time as birth, in transit_year (safe for Feb 29)
-      - 'jan1_noon': Jan 1, 12:00 local
-      - 'jul1_noon': Jul 1, 12:00 local
-    """
-    y = int(transit_year)
-    mode = (transit_mode or "birthday").lower().strip()
-
-    if mode == "jan1_noon":
-        dt_local = safe_replace_local(birth_local, year=y, month=1, day=1, hour=12, minute=0, second=0)
-    elif mode == "jul1_noon":
-        dt_local = safe_replace_local(birth_local, year=y, month=7, day=1, hour=12, minute=0, second=0)
-    else:
-        dt_local = safe_replace_local(birth_local, year=y)
-
+def compute_transit_chart(birth_local: datetime, lat: float, lon_east: float, transit_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None) -> dict:
+    dt_local = _target_date(birth_local, transit_year, month)
     dt_utc = dt_local.astimezone(ZoneInfo("UTC"))
     planets = calc_sidereal_planets(dt_utc, sid_mode=sid_mode)
     houses = calc_houses(dt_utc, lat, lon_east, sid_mode=sid_mode)
-    return {"planets": planets, "houses": houses, "dt_local": dt_local, "dt_utc": dt_utc, "sid_mode": sid_mode, "transit_mode": mode}
+    return {"planets": planets, "houses": houses, "dt_local": dt_local, "dt_utc": dt_utc, "sid_mode": sid_mode}
 
-def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI") -> dict:
-    target_local = safe_replace_local(birth_local, year=int(target_year))
+def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None) -> dict:
+    target_local = _target_date(birth_local, target_year, month)
     age_days = (target_local - birth_local).total_seconds() / 86400.0
     progressed_local = birth_local + timedelta(days=age_days / DAYS_PER_YEAR)
     progressed_utc = progressed_local.astimezone(ZoneInfo("UTC"))
@@ -312,7 +379,7 @@ def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float,
     houses = calc_houses(progressed_utc, lat, lon_east, sid_mode=sid_mode)
     return {"planets": planets, "houses": houses, "dt_local": progressed_local, "dt_utc": progressed_utc, "sid_mode": sid_mode}
 
-def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI") -> dict:
+def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None) -> dict:
     """
     Solar Arc (simple):
       arc = progressed_sun_lon (secondary) - natal_sun_lon
@@ -320,7 +387,7 @@ def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, 
     Retro is not used for directed positions -> retro=False.
     """
     natal = compute_birth_chart(birth_local, lat, lon_east, sid_mode=sid_mode)
-    prog = compute_progressed_chart(birth_local, lat, lon_east, target_year, sid_mode=sid_mode)
+    prog = compute_progressed_chart(birth_local, lat, lon_east, target_year, sid_mode=sid_mode, month=month)
 
     natal_sun = next(p for p in natal["planets"] if p.name == "Sun")
     prog_sun = next(p for p in prog["planets"] if p.name == "Sun")
@@ -360,5 +427,5 @@ def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, 
         "mc_sid": mc_sid, "mc_sign": mc_sign, "mc_deg": mc_deg,
     }
 
-    dt_local = birth_local.replace(year=int(target_year))
+    dt_local = _target_date(birth_local, target_year, month)
     return {"planets": directed_planets, "houses": houses_dir, "dt_local": dt_local, "dt_utc": dt_local.astimezone(ZoneInfo("UTC")), "sid_mode": sid_mode}

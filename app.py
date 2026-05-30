@@ -16,6 +16,7 @@ import geonamescache
 from timezonefinder import TimezoneFinder
 
 from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 
 import plotly.graph_objects as go
 
@@ -34,6 +35,104 @@ from astro_calc import (
 # =========================================================
 st.set_page_config(page_title="Life Path Graph", layout="wide")
 st.title("Life Path Graph")
+
+# --- Dropdown polish: pointer cursor + solid hover highlight + no truncation ---
+st.markdown(
+    """
+    <style>
+    /* Whole-app pure-black background */
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stHeader"],
+    [data-testid="stMain"],
+    .main,
+    .block-container {
+        background: #000000 !important;
+    }
+    [data-testid="stHeader"] {
+        background: transparent !important;
+    }
+    /* Wider sidebar so dasha date ranges fit */
+    section[data-testid="stSidebar"] {
+        width: 360px !important;
+        min-width: 360px !important;
+        background: #000000 !important;
+    }
+    /* Sidebar heading */
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        color: #1e9e5a !important;
+        letter-spacing: 0.3px;
+    }
+    /* Sidebar buttons: transparent inside, sea-green border, deeper fill on hover */
+    section[data-testid="stSidebar"] button[kind],
+    section[data-testid="stSidebar"] div[data-testid="stButton"] > button {
+        background: transparent !important;
+        color: #1e9e5a !important;
+        border: 1.6px solid #1e9e5a !important;
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+        transition: all 0.15s ease !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stButton"] > button:hover {
+        background: #15803d !important;
+        color: #eafff2 !important;
+        border-color: #15803d !important;
+        box-shadow: 0 0 10px rgba(21,128,61,0.5) !important;
+    }
+    /* Sidebar dropdowns (Mahadasha/Antardasha/Pratyantardasha): transparent, green border */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
+        background: transparent !important;
+        border: 1.6px solid #1e9e5a !important;
+        border-radius: 10px !important;
+    }
+    section[data-testid="stSidebar"] div[data-baseweb="select"] * {
+        color: #cdeedd !important;
+    }
+    /* Keep the 'Selected: ...' success block solid green so it stands out */
+    section[data-testid="stSidebar"] div[data-testid="stAlert"] {
+        background: #15803d !important;
+        border: 1px solid #1e9e5a !important;
+        border-radius: 10px !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stAlert"] * {
+        color: #ffffff !important;
+    }
+    /* Selectbox closed control: show arrow/pointer cursor, not the text I-beam */
+    div[data-baseweb="select"],
+    div[data-baseweb="select"] *,
+    div[data-baseweb="select"] div[role="button"] {
+        cursor: pointer !important;
+    }
+    /* The value shown in a closed selectbox: don't clip with ellipsis */
+    div[data-baseweb="select"] div[role="button"] > div {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+    /* Dropdown menu options (open list) */
+    ul[role="listbox"] li,
+    div[data-baseweb="menu"] li,
+    div[data-baseweb="popover"] li[role="option"] {
+        cursor: pointer !important;
+        border-radius: 6px;
+        margin: 2px 6px;
+        white-space: normal !important;       /* allow full date ranges to wrap */
+        line-height: 1.3;
+        transition: background-color 0.12s ease;
+    }
+    /* hovered + keyboard-highlighted option */
+    ul[role="listbox"] li:hover,
+    div[data-baseweb="menu"] li:hover,
+    li[role="option"][aria-selected="true"],
+    li[role="option"]:hover {
+        background-color: rgba(0, 200, 140, 0.22) !important;
+        box-shadow: inset 3px 0 0 #00c88c;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # =========================================================
 # Helpers
@@ -112,6 +211,7 @@ def label_place(p: Place) -> str:
     return ", ".join(parts)
 
 ROMAN = ["", "I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII"]
+MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
 def planet_abbr(name: str) -> str:
     return {
@@ -172,6 +272,10 @@ def badhaka_house_for_lagna(lagna_sign: str) -> int:
 
 def cusp_str(cusp_info: dict, house_num: int) -> str:
     ci = cusp_info[house_num]
+    # Whole-sign houses (used by divisional charts) have cusp at 0° — showing
+    # "00:00:00" is just clutter, so omit the degree when it's effectively zero.
+    if ci["deg"] < 0.0001:
+        return ""
     return f"{fmt_deg(ci['deg'])}{SIGN_GLYPH.get(ci['sign'], '')}"
 
 def to_naive_ts(x):
@@ -195,12 +299,6 @@ SOUTH_GRID = [
 # =========================================================
 # Place data (cached)
 # =========================================================
-
-@st.cache_resource
-def get_geocoder():
-    # Nominatim (OpenStreetMap) fallback for towns/villages not in geonamescache
-    return Nominatim(user_agent="life_engine_app", timeout=10)
-
 @st.cache_resource
 def load_place_data():
     gc = geonamescache.GeonamesCache()
@@ -209,6 +307,31 @@ def load_place_data():
     countries = [(c.name, c.alpha_2) for c in pycountry.countries]
     countries = sorted(countries, key=lambda x: x[0].lower())
     country_name_to_code = {n: cc for n, cc in countries}
+
+    # Best-effort admin1 (state/province) code -> name map.
+    # geonamescache ships an admin1 dataset in most versions; if not present,
+    # we degrade gracefully and just omit the state name.
+    admin1_map = {}
+    try:
+        a1 = gc.get_us_states()  # always present; gives US states at least
+        for code, info in a1.items():
+            admin1_map[f"US.{info.get('code','')}"] = info.get("name", "")
+    except Exception:
+        pass
+    # Try documented method-name variants safely for the full global admin1 table.
+    for meth in ("get_admin1_codes", "get_admin1", "get_admin1codes"):
+        fn = getattr(gc, meth, None)
+        if fn is None:
+            continue
+        try:
+            data = fn()
+            if isinstance(data, dict):
+                for key, info in data.items():
+                    nm = info.get("name") if isinstance(info, dict) else None
+                    if nm:
+                        admin1_map[str(key)] = nm
+        except Exception:
+            continue
 
     cities = gc.get_cities()
     rows = []
@@ -225,6 +348,11 @@ def load_place_data():
     df = pd.DataFrame(rows)
     df["name_l"] = df["name"].astype(str).str.lower()
     df["countrycode"] = df["countrycode"].astype(str)
+    # Resolve a human-readable state/province name where possible.
+    def _state_name(row):
+        key = f"{row['countrycode']}.{row['admin1code']}"
+        return admin1_map.get(key, "")
+    df["state_name"] = df.apply(_state_name, axis=1)
     return countries, country_name_to_code, df, tf
 
 def find_city_matches_stable(df: pd.DataFrame, country_code: str, query: str, limit: int = 50) -> pd.DataFrame:
@@ -256,6 +384,60 @@ def resolve_place(country_name: str, country_code: str, row: pd.Series, tf: Time
     tz = safe_tz(tz)
     admin1 = str(row.get("admin1code", "") or "")
     return Place(country_name, country_code, str(row["name"]), admin1 if admin1 else None, lat, lon, tz)
+
+# ---------------------------------------------------------
+# Free-type place search via geopy / OpenStreetMap (Nominatim).
+# Resolves any town/village/district worldwide, e.g. "palasa"
+# -> "Palasa, Srikakulam, Andhra Pradesh".
+# Cached so the same query isn't geocoded twice.
+# ---------------------------------------------------------
+@st.cache_resource
+def _get_geocoder():
+    geolocator = Nominatim(user_agent="life_path_graph_app")
+    # 1 request/sec keeps us within Nominatim's usage policy.
+    return RateLimiter(geolocator.geocode, min_delay_seconds=1.0, swallow_exceptions=True)
+
+@st.cache_data(show_spinner=False)
+def geocode_place(query: str, country_name: str):
+    """Return a list of candidate dicts: name, state, district, display, lat, lon."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    geocode = _get_geocoder()
+    try:
+        results = geocode(
+            f"{q}, {country_name}",
+            exactly_one=False,
+            addressdetails=True,
+            limit=8,
+        ) or []
+    except Exception:
+        results = []
+    out = []
+    for r in results:
+        addr = (r.raw or {}).get("address", {})
+        town = (addr.get("city") or addr.get("town") or addr.get("village")
+                or addr.get("hamlet") or addr.get("municipality") or q.title())
+        district = (addr.get("state_district") or addr.get("county") or "")
+        state = addr.get("state") or ""
+        # Build "Town, District, State" (skip blanks)
+        label_parts = [p for p in [town, district, state] if p]
+        out.append({
+            "name": town,
+            "district": district,
+            "state": state,
+            "display": ", ".join(label_parts) if label_parts else r.address,
+            "lat": float(r.latitude),
+            "lon": float(r.longitude),
+        })
+    # de-duplicate by display text, preserve order
+    seen, uniq = set(), []
+    for o in out:
+        if o["display"] in seen:
+            continue
+        seen.add(o["display"])
+        uniq.append(o)
+    return uniq
 
 # =========================================================
 # BCP helpers
@@ -356,7 +538,10 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
     sign_map = {s: [] for s in SIGNS}
     for p in planets:
         ab = planet_abbr(p.name)
-        tag = f"[{ab}]" if getattr(p, "retro", False) else ab
+        if p.name in ("Rahu", "Ketu"):
+            tag = ab  # nodes are always retrograde — show without brackets
+        else:
+            tag = f"[{ab}]" if getattr(p, "retro", False) else ab
         sign_map[p.sign].append((p.name, f"{tag} {fmt_deg(p.deg_in_sign)}"))
 
     if effective_mode == "Dark":
@@ -392,12 +577,12 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
     }
 
     if size_mode == "full":
-        td_h, pad = 150, 10
-        items_fs, cusp_fs, hnum_fs = 15, 13, 16
+        td_h, pad = 132, 8
+        items_fs, cusp_fs, hnum_fs, glyph_fs = 13.5, 12, 14.5, 16
         title_fs, center_fs = 18, 14
     else:
-        td_h, pad = 145, 9
-        items_fs, cusp_fs, hnum_fs = 14.5, 12.8, 15.5
+        td_h, pad = 124, 7
+        items_fs, cusp_fs, hnum_fs, glyph_fs = 13, 11.5, 14, 15
         title_fs, center_fs = 17, 13.5
 
     def colored_span(pname: str, text: str) -> str:
@@ -408,6 +593,7 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
         h = house_for_sign(asc_sign, sign)
         lagna = " (L)" if h == 1 else ""
         cusp = cusp_str(cusp_info, h)
+        glyph = SIGN_GLYPH.get(sign, "")
 
         activated = (activation_house == h)
         cls = "hnum activated" if activated else "hnum"
@@ -415,11 +601,13 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
         age_tag = ""
         if isinstance(bcp_age, int) and isinstance(activation_house, int):
             age_here = bcp_age_for_house(bcp_age, activation_house, h)
-            age_tag = f" <span class='age'>[{age_here}]</span>"
+            if age_here >= 0:
+                age_tag = f" <span class='age'>[{age_here}]</span>"
 
         header = f"""
         <div class="hrow">
           <span class="{cls}">{ROMAN[h]}{lagna}{age_tag}</span>
+          <span class="glyph">{glyph}</span>
           <span class="cusp">{cusp}</span>
         </div>
         """
@@ -431,9 +619,14 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
 
     style = f"""
     <style>
+      .chartwrap {{
+        max-width: 680px;
+        margin: 0 auto;
+      }}
       .title {{
         font-size: {title_fs}px; font-weight: 800; margin: 6px 0 10px 0; color: {text_color};
         font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto;
+        text-align: center;
       }}
       table.south {{
         width: 100%;
@@ -443,51 +636,63 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
         font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto;
       }}
       table.south td {{
-        border: 2px solid {border};
+        border: 1.5px solid {border};
+        width: 25%;
         height: {td_h}px;
+        max-height: {td_h}px;
         vertical-align: top;
         padding: {pad}px;
         background: {cell_bg};
+        overflow: hidden;            /* keep everything inside the box */
       }}
       table.south td.blank {{
-        border: 2px solid {border_blank};
+        border: 1.5px solid {border_blank};
         background: {blank_bg};
       }}
       .hrow {{
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 8px;
-        gap: 8px;
+        margin-bottom: 6px;
+        gap: 4px;
       }}
       .hnum {{
         font-size: {hnum_fs}px;
         font-weight: 900;
         color: {house_color};
-        padding: 2px 8px;
-        border-radius: 10px;
+        padding: 1px 6px;
+        border-radius: 8px;
         background: {house_badge_bg};
         white-space: nowrap;
       }}
+      .glyph {{
+        font-size: {glyph_fs}px;
+        font-weight: 700;
+        opacity: 0.85;
+        color: {text_color};
+      }}
       .age {{
-        font-size: 0.92em;
+        font-size: 0.9em;
         font-weight: 900;
         opacity: 0.95;
-        margin-left: 4px;
+        margin-left: 3px;
       }}
       .hnum.activated {{
         background: linear-gradient(45deg, #f7ff00, #00ff88);
         color: #000 !important;
-        box-shadow: 0 0 10px rgba(0,255,136,0.85), 0 0 20px rgba(247,255,0,0.65);
+        box-shadow: 0 0 8px rgba(0,255,136,0.7), 0 0 16px rgba(247,255,0,0.5);
       }}
       .cusp {{
         font-size: {cusp_fs}px;
         font-weight: 800;
         opacity: 0.95;
+        white-space: nowrap;
       }}
       .items {{
         font-size: {items_fs}px;
-        line-height: 1.22;
+        line-height: 1.25;
+        word-break: break-word;
+        overflow: hidden;
       }}
       .centerbox {{
         height: 100%;
@@ -507,7 +712,7 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
     </style>
     """
 
-    html = [style, f"<div class='title'>{chart_title}</div>", "<table class='south'>"]
+    html = [style, "<div class='chartwrap'>", f"<div class='title'>{chart_title}</div>", "<table class='south'>"]
     for r in range(4):
         html.append("<tr>")
         for c in range(4):
@@ -523,92 +728,250 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
                 html.append(f"<td>{cell_content(sign)}</td>")
         html.append("</tr>")
     html.append("</table>")
+    html.append("</div>")
     return "".join(html)
 
 def render_south_chart(chart_title: str, planets, houses, center_lines: list[str], effective_mode: str, size_mode: str):
     html = south_chart_html(chart_title, planets, houses, center_lines, effective_mode, size_mode=size_mode)
-    height = 760 if size_mode == "full" else 740
+    height = 640 if size_mode == "full" else 600
     components.html(html, height=height, scrolling=False)
+
+# =========================================================
+# North Indian chart (fixed-house diamond layout, SVG)
+# =========================================================
+def north_chart_html(chart_title: str, planets, houses, effective_mode: str, size_mode: str) -> str:
+    asc_sign = houses["asc_sign"]
+    asc_idx = sign_index(asc_sign)  # 0-based; sign number in house = (asc_idx + h-1)%12 + 1
+    activation_house = houses.get("bcp_house")  # BCP-activated house for that year (transit)
+    bcp_age = houses.get("bcp_age")
+
+    # planets grouped by house number (1..12), using same data as South chart
+    house_planets = {h: [] for h in range(1, 13)}
+    for p in planets:
+        h = house_for_sign(asc_sign, p.sign)
+        house_planets[h].append(p)
+
+    planet_colors = {
+        "Mercury": "#1aa31a", "Mars": "#d00000", "Sun": "#ff7a00",
+        "Jupiter": "#c9a400", "Uranus": "#00838f",
+        "Venus": "#ffffff", "Saturn": "#ffffff", "Moon": "#ffffff",
+        "Rahu": "#ffffff", "Ketu": "#ffffff",
+    }
+    line_col = "#e08a3c"      # warm orange like the sample
+    sign_col = "#d23a3a"      # sign number/glyph color
+    text_col = "#ffffff"
+
+    W = 460 if size_mode == "full" else 430
+    # Key points of the square
+    TL = (0, 0); TR = (W, 0); BR = (W, W); BL = (0, W)
+    T = (W/2, 0); R = (W, W/2); B = (W/2, W); L = (0, W/2)
+    C = (W/2, W/2)
+    # Midpoints of the four inner diamond edges (centers of the corner triangles' inner diamonds)
+    TLm = (W/4, W/4); TRm = (3*W/4, W/4); BRm = (3*W/4, 3*W/4); BLm = (W/4, 3*W/4)
+
+    # House polygons (standard North layout) and their text-anchor points.
+    # House 1 = top-center; then counter-clockwise 2,3,... per user's sample.
+    houses_geom = {
+        1:  ([T, TLm, C, TRm],            C[0],            W*0.17),
+        2:  ([TL, T, TLm],                W*0.25,          W*0.09),
+        3:  ([TL, TLm, L],                W*0.09,          W*0.25),
+        4:  ([L, TLm, C, BLm],            W*0.25,          C[1]),
+        5:  ([BL, L, BLm],                W*0.09,          W*0.75),
+        6:  ([BL, BLm, B],                W*0.25,          W*0.91),
+        7:  ([B, BLm, C, BRm],            C[0],            W*0.83),
+        8:  ([BR, B, BRm],                W*0.75,          W*0.91),
+        9:  ([BR, BRm, R],                W*0.91,          W*0.75),
+        10: ([R, BRm, C, TRm],            W*0.75,          C[1]),
+        11: ([TR, R, TRm],                W*0.91,          W*0.25),
+        12: ([TR, TRm, T],                W*0.75,          W*0.09),
+    }
+
+    def poly(pts):
+        return " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+
+    sign_fs = 15 if size_mode == "full" else 14
+    pl_fs   = 13 if size_mode == "full" else 12
+    roman_fs = 13 if size_mode == "full" else 12
+    title_fs = 18
+    roman_col = "#7CFF7C"  # same green as South chart house numbers
+
+    svg = []
+    svg.append(f'<div style="max-width:{W+20}px;margin:0 auto;">')
+    svg.append(f'<div style="font-size:{title_fs}px;font-weight:800;color:{text_col};'
+               f'text-align:center;margin:6px 0 8px;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto;">{chart_title}</div>')
+    svg.append(f'<svg viewBox="0 0 {W} {W}" width="100%" xmlns="http://www.w3.org/2000/svg" '
+               f'style="font-family:ui-sans-serif,system-ui,Segoe UI,Roboto;">')
+    # glow filter used to highlight the BCP-activated house
+    svg.append(
+        '<defs><filter id="bcpglow" x="-60%" y="-60%" width="220%" height="220%">'
+        '<feDropShadow dx="0" dy="0" stdDeviation="3.2" flood-color="#00ff88" flood-opacity="0.95"/>'
+        '</filter></defs>'
+    )
+    # outer square + diagonals + diamond
+    svg.append(f'<rect x="0" y="0" width="{W}" height="{W}" fill="none" stroke="{line_col}" stroke-width="1.6"/>')
+    svg.append(f'<line x1="0" y1="0" x2="{W}" y2="{W}" stroke="{line_col}" stroke-width="1.2"/>')
+    svg.append(f'<line x1="{W}" y1="0" x2="0" y2="{W}" stroke="{line_col}" stroke-width="1.2"/>')
+    svg.append(f'<polygon points="{poly([T,R,B,L])}" fill="none" stroke="{line_col}" stroke-width="1.2"/>')
+
+    for h in range(1, 13):
+        pts, ax, ay = houses_geom[h]
+        s_idx = (asc_idx + (h - 1)) % 12
+        sign_no = s_idx + 1
+        glyph = SIGN_GLYPH.get(SIGNS[s_idx], "")
+        # Roman numeral (house number). Keep it inside the box: above the
+        # sign marker normally, but below it for houses hugging the top edge.
+        roman_y = ay - sign_fs - 2
+        if roman_y < roman_fs + 2:          # too close to the top edge
+            roman_y = ay + sign_fs + 2
+            planet_offset = sign_fs + 2 + roman_fs + 3
+        else:
+            planet_offset = sign_fs + 2
+
+        is_active = (activation_house == h)
+
+        # BCP age for this house (only when transit data present; hide if negative)
+        age_str = ""
+        if isinstance(bcp_age, int) and isinstance(activation_house, int):
+            age_here = bcp_age_for_house(bcp_age, activation_house, h)
+            if age_here >= 0:
+                age_str = f"[{age_here}]"
+
+        if is_active:
+            # green glowing pill behind the Roman numeral
+            rw = roman_fs * 2.2
+            rh = roman_fs * 1.5
+            svg.append(
+                f'<rect x="{ax - rw/2:.1f}" y="{roman_y - roman_fs:.1f}" width="{rw:.1f}" height="{rh:.1f}" '
+                f'rx="5" ry="5" fill="#00ff88" filter="url(#bcpglow)"/>'
+            )
+            svg.append(f'<text x="{ax:.1f}" y="{roman_y:.1f}" fill="#04140b" '
+                       f'font-size="{roman_fs}" font-weight="900" text-anchor="middle">{ROMAN[h]}</text>')
+        else:
+            svg.append(f'<text x="{ax:.1f}" y="{roman_y:.1f}" fill="{roman_col}" '
+                       f'font-size="{roman_fs}" font-weight="900" text-anchor="middle">{ROMAN[h]}</text>')
+        # small age tag beside the Roman numeral (dim grey)
+        if age_str:
+            svg.append(f'<text x="{ax:.1f}" y="{roman_y - roman_fs - 1:.1f}" fill="#9aa0a6" '
+                       f'font-size="{roman_fs - 2}" font-weight="700" text-anchor="middle">{age_str}</text>')
+        # sign number + glyph
+        svg.append(f'<text x="{ax:.1f}" y="{ay:.1f}" fill="{sign_col}" font-size="{sign_fs}" '
+                   f'font-weight="800" text-anchor="middle">{sign_no} {glyph}</text>')
+        # planets, stacked just below the sign marker (and below Roman if it moved down)
+        plist = house_planets.get(h, [])
+        for i, p in enumerate(plist):
+            ab = planet_abbr(p.name)
+            # Rahu/Ketu are always retrograde — show them without brackets.
+            if p.name in ("Rahu", "Ketu"):
+                disp = ab
+            else:
+                disp = "[" + ab + "]" if getattr(p, "retro", False) else ab
+            deg = int(p.deg_in_sign)
+            col = planet_colors.get(p.name, text_col)
+            py = ay + planet_offset + i * (pl_fs + 3)
+            svg.append(f'<text x="{ax:.1f}" y="{py:.1f}" fill="{col}" font-size="{pl_fs}" '
+                       f'font-weight="700" text-anchor="middle">{disp} {deg}\u00b0</text>')
+
+    svg.append('</svg></div>')
+    return "".join(svg)
+
+def render_north_chart(chart_title: str, planets, houses, effective_mode: str, size_mode: str):
+    html = north_chart_html(chart_title, planets, houses, effective_mode, size_mode=size_mode)
+    height = 560 if size_mode == "full" else 520
+    components.html(html, height=height, scrolling=False)
+
+def render_chart(style: str, chart_title: str, planets, houses, center_lines, effective_mode, size_mode):
+    """Dispatch to South or North renderer based on the chosen style."""
+    if style == "North Indian":
+        render_north_chart(chart_title, planets, houses, effective_mode, size_mode)
+    else:
+        render_south_chart(chart_title, planets, houses, center_lines, effective_mode, size_mode)
 
 # =========================================================
 # Vimshottari selector (CLICK TO SELECT + Clear)
 # =========================================================
 def dasha_selector_click(md_periods):
-    st.subheader("Vimshottari (click to select)")
+    st.subheader("Vimshottari Dasha")
 
     for k in ("sel_md", "sel_ad", "sel_pd", "selected_period"):
         if k not in st.session_state:
             st.session_state[k] = None
 
-    def clear_all():
-        st.session_state["sel_md"] = None
-        st.session_state["sel_ad"] = None
-        st.session_state["sel_pd"] = None
-        st.session_state["selected_period"] = None
-
-    if st.button("Clear selection", use_container_width=True):
-        clear_all()
-
     def label(p):
         return f"{p.lord} {p.level} — {fmt_dmy_dash(p.start)} to {fmt_dmy_dash(p.end)}"
 
+    NONE = "— none —"
+
+    # --- Mahadasha (starts empty) ---
     md_labels = [label(p) for p in md_periods]
-    md_idx = st.selectbox("MD (pick, then click Select MD)", range(len(md_periods)), format_func=lambda i: md_labels[i])
+    md_options = [NONE] + md_labels
+    md_choice = st.selectbox(
+        "Mahadasha", md_options, key="md_pick",
+        help="Pick a Mahadasha to see its window; leave others empty to stay at this level.",
+    )
+    chosen_md = md_periods[md_options.index(md_choice) - 1] if md_choice != NONE else None
 
-    if st.button("Select MD", use_container_width=True):
-        st.session_state["sel_md"] = md_periods[md_idx]
-        st.session_state["sel_ad"] = None
-        st.session_state["sel_pd"] = None
+    chosen_ad = None
+    chosen_pd = None
+
+    # --- Antardasha (only if an MD is chosen) ---
+    if chosen_md is not None:
+        ads = astro_calc.build_subperiods(chosen_md, "AD")
+        ad_labels = [label(p) for p in ads]
+        ad_options = [NONE] + ad_labels
+        # If the current ad_pick isn't valid for this MD, reset it.
+        if st.session_state.get("ad_pick") not in ad_options:
+            st.session_state["ad_pick"] = NONE
+        ad_choice = st.selectbox(
+            "Antardasha", ad_options, key="ad_pick",
+            help="Optional — pick to zoom into an Antardasha.",
+        )
+        chosen_ad = ads[ad_options.index(ad_choice) - 1] if ad_choice != NONE else None
+
+        # --- Pratyantardasha (only if an AD is chosen) ---
+        if chosen_ad is not None:
+            pds = astro_calc.build_subperiods(chosen_ad, "PD")
+            pd_labels = [label(p) for p in pds]
+            pd_options = [NONE] + pd_labels
+            if st.session_state.get("pd_pick") not in pd_options:
+                st.session_state["pd_pick"] = NONE
+            pd_choice = st.selectbox(
+                "Pratyantardasha", pd_options, key="pd_pick",
+                help="Optional — pick to zoom into a Pratyantardasha.",
+            )
+            chosen_pd = pds[pd_options.index(pd_choice) - 1] if pd_choice != NONE else None
+
+    # The most specific level the user has chosen drives the graph.
+    deepest = chosen_pd or chosen_ad or chosen_md
+    st.session_state["sel_md"] = chosen_md
+    st.session_state["sel_ad"] = chosen_ad
+    st.session_state["sel_pd"] = chosen_pd
+    if deepest is not None:
         st.session_state["selected_period"] = {
-            "level": "MD",
-            "lord": st.session_state["sel_md"].lord,
-            "start": st.session_state["sel_md"].start.isoformat(),
-            "end": st.session_state["sel_md"].end.isoformat(),
-            "label": label(st.session_state["sel_md"]),
+            "level": deepest.level,
+            "lord": deepest.lord,
+            "start": deepest.start.isoformat(),
+            "end": deepest.end.isoformat(),
+            "label": label(deepest),
         }
-
-    md = st.session_state["sel_md"]
-    if md is None:
-        st.info("No MD selected yet.")
-        return
-
-    ads = astro_calc.build_subperiods(md, "AD")
-    ad_labels = [label(p) for p in ads]
-    ad_idx = st.selectbox("AD (pick, then click Select AD)", range(len(ads)), format_func=lambda i: ad_labels[i])
-
-    if st.button("Select AD", use_container_width=True):
-        st.session_state["sel_ad"] = ads[ad_idx]
-        st.session_state["sel_pd"] = None
-        st.session_state["selected_period"] = {
-            "level": "AD",
-            "lord": st.session_state["sel_ad"].lord,
-            "start": st.session_state["sel_ad"].start.isoformat(),
-            "end": st.session_state["sel_ad"].end.isoformat(),
-            "label": label(st.session_state["sel_ad"]),
-        }
-
-    ad = st.session_state["sel_ad"]
-    if ad is None:
-        st.caption("Select AD to enable PD.")
-        return
-
-    pds = astro_calc.build_subperiods(ad, "PD")
-    pd_labels = [label(p) for p in pds]
-    pd_idx = st.selectbox("PD (pick, then click Select PD)", range(len(pds)), format_func=lambda i: pd_labels[i])
-
-    if st.button("Select PD", use_container_width=True):
-        st.session_state["sel_pd"] = pds[pd_idx]
-        st.session_state["selected_period"] = {
-            "level": "PD",
-            "lord": st.session_state["sel_pd"].lord,
-            "start": st.session_state["sel_pd"].start.isoformat(),
-            "end": st.session_state["sel_pd"].end.isoformat(),
-            "label": label(st.session_state["sel_pd"]),
-        }
+    else:
+        st.session_state["selected_period"] = None
 
     sel = st.session_state.get("selected_period")
     if sel:
         st.success(f"Selected: **{sel['label']}**")
+    else:
+        st.caption("Pick a Mahadasha to begin.")
+
+    # Clear sits at the bottom of the panel, after the dropdowns and result.
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    if st.button("Clear selection", use_container_width=True):
+        for kk in ("md_pick", "ad_pick", "pd_pick"):
+            st.session_state[kk] = NONE
+        st.session_state["sel_md"] = None
+        st.session_state["sel_ad"] = None
+        st.session_state["sel_pd"] = None
+        st.session_state["selected_period"] = None
+        st.rerun()
 
 # =========================================================
 # Aspect helpers + engines
@@ -1029,12 +1392,13 @@ def recompute_all():
     st.session_state["birth"] = birth
 
     year = int(st.session_state.get("year", datetime.now().year))
-    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
+    sel_month = int(st.session_state.get("sel_month", birth_local.month))
+    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
 
     if progression_type.startswith("Secondary"):
-        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
+        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
     else:
-        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
+        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
 
     st.session_state["life_df"] = generate_general_life_df(
         birth_local=birth_local,
@@ -1067,11 +1431,12 @@ def recompute_year_only():
         return
 
     year = int(st.session_state.get("year", datetime.now().year))
-    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
+    sel_month = int(st.session_state.get("sel_month", birth_local.month))
+    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
     if progression_type.startswith("Secondary"):
-        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
+        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
     else:
-        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key)
+        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
 
 # =========================================================
 # UI Inputs
@@ -1084,57 +1449,144 @@ default_dob = st.session_state.get("dob", date(2000, 1, 1))
 default_tob_text = st.session_state.get("tob_text", "")
 default_country = st.session_state.get("country", "India")
 
-# IMPORTANT: We keep a *draft* city input (user types) and only apply it when they click Search.
-draft_city = st.session_state.get("draft_city", st.session_state.get("city_query", "Hyderabad"))
-applied_city = st.session_state.get("city_query", "Hyderabad")
+# Derive default hour/min/sec for the 3 TOB boxes from any stored TOB text.
+# We use text_input boxes so we can show "HH"/"MM"/"SS" grey placeholder hints;
+# empty boxes show the hint instead of 0.
+_def_tob = parse_time_text(default_tob_text) if default_tob_text else None
+default_hh = f"{_def_tob.hour:02d}" if _def_tob else ""
+default_mm = f"{_def_tob.minute:02d}" if _def_tob else ""
+default_ss = f"{_def_tob.second:02d}" if _def_tob else ""
 
-row1 = st.columns([1.2, 1.2, 1.4, 2.0, 2.2, 1.0], vertical_alignment="bottom")
+# Seed the TOB widget state exactly once so we can omit value= (avoids key/value warning)
+if "tob_hh" not in st.session_state: st.session_state["tob_hh"] = default_hh
+if "tob_mm" not in st.session_state: st.session_state["tob_mm"] = default_mm
+if "tob_ss" not in st.session_state: st.session_state["tob_ss"] = default_ss
+
+# Row 1: Name | DOB | TOB | Country
+row1 = st.columns([1.3, 1.2, 1.7, 1.8], vertical_alignment="top")
 with row1[0]:
     name = st.text_input("Name", value=default_name, placeholder="Enter name…")
 with row1[1]:
-    dob = st.date_input(
-    "DOB",
-    value=default_dob,
-    min_value=date(1800, 1, 1),
-    max_value=date(2100, 12, 31),
-    format="DD/MM/YYYY",
-)
+    dob = st.date_input("DOB", value=default_dob, format="DD/MM/YYYY")
 with row1[2]:
-    tob_text = st.text_input("TOB", value=default_tob_text, placeholder="HH:MM or HH:MM:SS")
+    # Use Streamlit's own label element (not a custom div) so the boxes line up
+    # on the exact same baseline as Name / DOB. Label turns red if required
+    # Hour/Minute are still empty, nudging the user before they compute.
+    _hh_empty = (st.session_state.get("tob_hh", "") or "").strip() == ""
+    _mm_empty = (st.session_state.get("tob_mm", "") or "").strip() == ""
+    if _hh_empty or _mm_empty:
+        _tob_label = ('<p style="font-size:14px;font-weight:700;margin:0 0 0.45rem 0;'
+                      'line-height:1.6;color:#ff6b6b;">Time of Birth (24h) — required *</p>')
+    else:
+        _tob_label = ('<p style="font-size:14px;font-weight:400;margin:0 0 0.45rem 0;'
+                      'line-height:1.6;color:inherit;">Time of Birth (24h)</p>')
+    st.markdown(_tob_label, unsafe_allow_html=True)
+    tcols = st.columns(3)
+    with tcols[0]:
+        tob_hh = st.text_input("Hour", placeholder="HH", max_chars=2,
+                               key="tob_hh", label_visibility="collapsed")
+    with tcols[1]:
+        tob_mm = st.text_input("Min", placeholder="MM", max_chars=2,
+                               key="tob_mm", label_visibility="collapsed")
+    with tcols[2]:
+        tob_ss = st.text_input("Sec", placeholder="SS", max_chars=2,
+                               key="tob_ss", label_visibility="collapsed")
 with row1[3]:
     country_names = [x[0] for x in countries]
     idx = country_names.index(default_country) if default_country in country_names else 0
     country = st.selectbox("Country", country_names, index=idx)
-with row1[4]:
-    draft_city = st.text_input(
-        "City search (type, then click Search)",
-        value=draft_city,
-        placeholder="Type city… (e.g., Hyderabad)",
-        key="draft_city",
-    )
-with row1[5]:
-    ui_mode = st.selectbox("UI", ["Auto", "Light", "Dark"], index=0)
 
-row_search = st.columns([1.0, 5.0], vertical_alignment="bottom")
-with row_search[0]:
-    do_search = st.button("Search city", use_container_width=True)
-with row_search[1]:
-    st.caption(f"Applied city filter: **{applied_city}** (updates only when you click **Search city**)")
+country_code = country_name_to_code[country]
 
-# Apply city filter only on button press (NO interruptions while typing)
-if do_search:
-    st.session_state["city_query"] = st.session_state.get("draft_city", "").strip()
-    applied_city = st.session_state["city_query"]
+# Row 1b: free-type City/Town and State box (resolves worldwide via OpenStreetMap)
+city_row = st.columns([3.0, 1.0], vertical_alignment="bottom")
+with city_row[0]:
+    if "place_query" not in st.session_state:
+        st.session_state["place_query"] = st.session_state.get("city_query", "Hyderabad")
+    place_query = st.text_input(
+        "City/Town",
+        key="place_query",
+        placeholder="Type a city, town, or village and press Enter…",
+    ).strip()
+with city_row[1]:
+    st.markdown('<div style="height:1.85rem;"></div>', unsafe_allow_html=True)
+    find_clicked = st.button("Find place", use_container_width=True)
 
-_base = (st.get_option("theme.base") or "light").lower()
-effective_mode = ("Dark" if _base == "dark" else "Light") if ui_mode == "Auto" else ui_mode
+# Geocode (cached). Runs when the user submits the text box or clicks Find.
+candidates = geocode_place(place_query, country) if place_query else []
 
-tob_val = parse_time_text(tob_text)
-if tob_val is None:
-    st.warning("Enter TOB in HH:MM or HH:MM:SS (example: 22:01 or 22:01:05).")
+if not candidates:
+    if place_query:
+        st.warning(
+            f"Couldn't find “{place_query}” in {country}. "
+            "Check spelling, or try the district/nearest town."
+        )
+    else:
+        st.info("Enter your birthplace above (city, town, or village) and press Enter.")
     st.stop()
 
-row2 = st.columns([1.6, 1.6, 1.6, 1.2], vertical_alignment="bottom")
+# If more than one candidate, let the user confirm which; first is auto-selected.
+if len(candidates) == 1:
+    chosen = candidates[0]
+    st.caption(f"Resolved place: **{chosen['display']}**")
+else:
+    disp = [c["display"] for c in candidates]
+    pick = st.selectbox(
+        "Confirm exact place",
+        options=range(len(disp)),
+        index=0,
+        format_func=lambda i: disp[i],
+        help="Multiple matches found — pick the correct one.",
+    )
+    chosen = candidates[pick]
+
+# Build a row-like object compatible with resolve_place().
+sel_row = pd.Series({
+    "name": chosen["name"],
+    "lat": chosen["lat"],
+    "lon": chosen["lon"],
+    "admin1code": chosen.get("state", "") or "",
+})
+
+_base = (st.get_option("theme.base") or "light").lower()
+effective_mode = "Dark"  # dark-only UI
+
+# Parse the HH/MM/SS boxes. Hour & Minute are REQUIRED (they change the chart);
+# Seconds is optional (blank = 0). Missing/invalid required fields show a red
+# message and stop before any chart is drawn, so a forgotten time can't silently
+# produce a wrong (midnight) chart.
+def _parse_field(s, lo, hi, field, required):
+    s = (s or "").strip()
+    if s == "":
+        return (None if required else 0), (field if required else None)
+    if not s.isdigit():
+        return None, f"{field} (must be a number 0-{hi})"
+    v = int(s)
+    if v < lo or v > hi:
+        return None, f"{field} (must be {lo}-{hi})"
+    return v, None
+
+_hh, e_hh = _parse_field(tob_hh, 0, 23, "Hour", required=True)
+_mm, e_mm = _parse_field(tob_mm, 0, 59, "Minute", required=True)
+_ss, e_ss = _parse_field(tob_ss, 0, 59, "Second", required=False)
+
+_problems = [e for e in (e_hh, e_mm, e_ss) if e]
+if _problems:
+    st.markdown(
+        "<div style='background:#3a0d0d;border:1.5px solid #ff4d4d;color:#ffd6d6;"
+        "padding:10px 14px;border-radius:10px;font-weight:600;'>"
+        "⚠️ Please enter the <b>Time of Birth</b> — "
+        + ", ".join(_problems)
+        + ". An accurate birth time is needed for a correct chart (Lagna & houses)."
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
+tob_val = time(_hh, _mm, _ss)
+tob_text = tob_val.strftime("%H:%M:%S")  # kept for downstream display/session use
+
+row2 = st.columns([1.5, 1.5, 1.2, 1.3, 1.1], vertical_alignment="bottom")
 with row2[0]:
     sid_mode = st.selectbox(
         "Ayanamsa",
@@ -1161,129 +1613,44 @@ with row2[2]:
         on_change=recompute_year_only,
     )
 with row2[3]:
+    # Default the month to the birth month on first load.
+    if "sel_month" not in st.session_state:
+        st.session_state["sel_month"] = dob.month
+    st.selectbox(
+        "Month",
+        list(range(1, 13)),
+        format_func=lambda m: MONTHS[m-1],
+        key="sel_month",
+        on_change=recompute_year_only,
+        help="Step through the year month-by-month. Charts compute for the birth day of this month.",
+    )
+with row2[4]:
     compute_now = st.button("Compute", type="primary", use_container_width=True)
 
 sid_mode_key = "KRISHNAMURTI" if "KRISHNAMURTI" in sid_mode else "LAHIRI"
 
-# City matches based on APPLIED filter only (stable)
-country_code = country_name_to_code[country]
-matches = find_city_matches_stable(city_df, country_code, st.session_state.get("city_query", "Hyderabad"), limit=60)
+# (City matching + State/Place picker already handled in row 1 above; sel_row is set.)
+place = resolve_place(country, country_code, sel_row, tf)
 
-if matches.empty:
-    # Fallback: Nominatim (OpenStreetMap) for towns/villages not present in geonamescache
-    q_city = str(st.session_state.get("city_query", "") or "").strip()
-    if not q_city:
-        st.warning("No matches. Type a place name and click Search city.")
-        st.stop()
+st.caption(
+    f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
+    f"Lat: **{place.lat:.6f}** | Lon: **{place.lon:.6f}** | "
+    f"DOB: **{fmt_dmy(dob)}** | TOB: **{tob_val.strftime('%H:%M:%S')}**"
+)
 
-    geocoder = get_geocoder()
-    try:
-        # Use country context to improve accuracy
-        q = f"{q_city}, {country}"
-        hits = geocoder.geocode(q, exactly_one=False, limit=10, addressdetails=True)
-    except Exception:
-        hits = None
+birth_local = datetime.combine(dob, tob_val).replace(tzinfo=ZoneInfo(place.timezone))
 
-    if not hits:
-        st.warning("No matches found (including fallback search). Try adding state/district (e.g., Karimnagar, Telangana).")
-        st.stop()
+# Persist inputs
+st.session_state["name"] = name
+st.session_state["dob"] = dob
+st.session_state["tob_text"] = tob_text
+st.session_state["country"] = country
+st.session_state["lat"] = place.lat
+st.session_state["lon"] = place.lon
+st.session_state["sid_mode_key"] = sid_mode_key
+st.session_state["tzname"] = place.timezone
+st.session_state["birth_local"] = birth_local
 
-    nom_rows = []
-    for h in hits:
-        try:
-            lat_h = float(getattr(h, "latitude", None))
-            lon_h = float(getattr(h, "longitude", None))
-        except Exception:
-            continue
-        disp = getattr(h, "address", None) or getattr(h, "raw", {}).get("display_name", "") or str(h)
-        nom_rows.append({"label": disp, "lat": lat_h, "lon": lon_h})
-
-    if not nom_rows:
-        st.warning("Fallback search returned results but coordinates were unavailable.")
-        st.stop()
-
-    nom_labels = [r["label"] for r in nom_rows]
-    pick = st.selectbox("Pick place (fallback search)", nom_labels, index=0)
-    chosen = nom_rows[nom_labels.index(pick)]
-
-    # Build a Place directly
-    tz = tf.timezone_at(lat=chosen["lat"], lng=chosen["lon"]) or "UTC"
-    tz = safe_tz(tz)
-
-    place = Place(
-        country_name=country,
-        country_code=country_name_to_code.get(country, ""),
-        city_name=pick.split(",")[0].strip() or q_city,
-        admin1_code=None,
-        lat=float(chosen["lat"]),
-        lon=float(chosen["lon"]),
-        timezone=tz,
-    )
-
-    st.caption(
-        f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
-        f"Lat: **{place.lat:.6f}** | Lon: **{place.lon:.6f}** | "
-        f"DOB: **{fmt_dmy(dob)}** | TOB: **{tob_val.strftime('%H:%M:%S')}**"
-    )
-
-    birth_local = datetime.combine(dob, tob_val).replace(tzinfo=ZoneInfo(place.timezone))
-
-    # Persist inputs
-    st.session_state["name"] = name
-    st.session_state["dob"] = dob
-    st.session_state["tob_text"] = tob_text
-    st.session_state["country"] = country
-    st.session_state["lat"] = place.lat
-    st.session_state["lon"] = place.lon
-    st.session_state["sid_mode_key"] = sid_mode_key
-    st.session_state["tzname"] = place.timezone
-    st.session_state["birth_local"] = birth_local
-else:
-
-    # Stable selection by geonameid (no jumping)
-    if "selected_geonameid" not in st.session_state:
-        st.session_state["selected_geonameid"] = int(matches.iloc[0]["geonameid"])
-
-    labels = []
-    id_list = []
-    for _, r in matches.iterrows():
-        pop = int(r.get("population", 0) or 0)
-        admin = r.get("admin1code", "") or ""
-        labels.append(f"{r['name']} | {admin} | pop:{pop:,}")
-        id_list.append(int(r["geonameid"]))
-
-    # keep current id if still in list, else choose first
-    if st.session_state["selected_geonameid"] in id_list:
-        default_idx = id_list.index(st.session_state["selected_geonameid"])
-    else:
-        default_idx = 0
-        st.session_state["selected_geonameid"] = id_list[0]
-
-    sel_label = st.selectbox("Pick place", labels, index=default_idx)
-    sel_idx = labels.index(sel_label)
-    st.session_state["selected_geonameid"] = id_list[sel_idx]
-    sel_row = matches.iloc[sel_idx]
-
-    place = resolve_place(country, country_code, sel_row, tf)
-
-    st.caption(
-        f"Resolved: **{label_place(place)}** | TZ: **{place.timezone}** | "
-        f"Lat: **{place.lat:.6f}** | Lon: **{place.lon:.6f}** | "
-        f"DOB: **{fmt_dmy(dob)}** | TOB: **{tob_val.strftime('%H:%M:%S')}**"
-    )
-
-    birth_local = datetime.combine(dob, tob_val).replace(tzinfo=ZoneInfo(place.timezone))
-
-    # Persist inputs
-    st.session_state["name"] = name
-    st.session_state["dob"] = dob
-    st.session_state["tob_text"] = tob_text
-    st.session_state["country"] = country
-    st.session_state["lat"] = place.lat
-    st.session_state["lon"] = place.lon
-    st.session_state["sid_mode_key"] = sid_mode_key
-    st.session_state["tzname"] = place.timezone
-    st.session_state["birth_local"] = birth_local
 # =========================================================
 # Compute
 # =========================================================
@@ -1347,6 +1714,15 @@ with topR:
 # =========================================================
 # Birth + Progressed charts
 # =========================================================
+head_l, head_r = st.columns([2.4, 1.0], vertical_alignment="bottom")
+with head_l:
+    st.subheader("Birth Chart")
+with head_r:
+    chart_style = st.selectbox(
+        "Chart style", ["South Indian", "North Indian"], index=0, key="chart_style",
+        help="Switch the layout of all charts (birth, progressed, transit).",
+    )
+
 c1, c2 = st.columns(2, vertical_alignment="top")
 
 asc_sign = birth["houses"]["asc_sign"]
@@ -1358,18 +1734,38 @@ center_birth = [
     f"Nak: <b>{nak_pada}</b>",
 ]
 
+VARGA_LABELS = {"D1": "D1 — Rasi", "D9": "D9 — Navamsa", "D10": "D10 — Dasamsa"}
+
 with c1:
-    render_south_chart("Birth Chart (South Indian)", birth["planets"], birth["houses"], center_birth, effective_mode, size_mode="half")
+    birth_varga = st.selectbox(
+        "Birth chart", ["D1", "D9", "D10"], index=0, key="birth_varga",
+        format_func=lambda v: VARGA_LABELS[v],
+        help="View the birth chart as Rasi (D1), Navamsa (D9), or Dasamsa (D10).",
+    )
+    bchart = astro_calc.divisional_chart(birth, birth_varga)
+    render_chart(chart_style, f"Birth {VARGA_LABELS[birth_varga]} ({chart_style})",
+                 bchart["planets"], bchart["houses"], center_birth, effective_mode, size_mode="half")
 
 with c2:
+    # Spacer to match the height of the birth chart's "Birth chart" dropdown,
+    # so the progression chart lines up vertically with the birth chart.
+    st.markdown(
+        '<div style="height:0.5rem;"></div>'
+        '<p style="font-size:14px;font-weight:400;margin:0 0 0.45rem 0;'
+        'line-height:1.6;color:rgba(250,250,250,0.55);">Progression (follows D1 year by year)</p>'
+        '<div style="height:38px;"></div>',
+        unsafe_allow_html=True,
+    )
+    _sel_m = int(st.session_state.get("sel_month", dob.month))
     center_prog = [
         f"<b>{name or '—'}</b>",
         f"{st.session_state['progression_type']}",
-        f"Year: <b>{int(st.session_state['year'])}</b>",
+        f"{MONTHS[_sel_m-1]} <b>{int(st.session_state['year'])}</b>",
         f"{fmt_dmy(prog['dt_local'])} {prog['dt_local']:%H:%M:%S}",
     ]
-    render_south_chart(
-        f"Progressed Chart ({int(st.session_state['year'])})",
+    render_chart(
+        chart_style,
+        f"Progressed Chart ({MONTHS[_sel_m-1]} {int(st.session_state['year'])})",
         prog["planets"], prog["houses"], center_prog,
         effective_mode, size_mode="half"
     )
@@ -1379,31 +1775,69 @@ with c2:
 # =========================================================
 st.markdown("---")
 
-age = int(st.session_state["year"]) - birth["birth_local"].year
-active_house = bcp_house_from_age(age)
-tran["houses"]["bcp_house"] = active_house
-tran["houses"]["bcp_age"] = age
+# Age advances on the BIRTHDAY, not Jan 1. Compute completed years as of the
+# selected transit date, then the BCP "running year" = completed age + 1
+# (on the birthday the person enters their next running year). The running year
+# drives the activated house, matching the classical reading:
+#   before the birthday in 2026 -> running year 36 -> house 12
+#   on/after the birthday        -> running year 37 -> house 1
+_tdate = tran["dt_local"]
+_bdate = birth["birth_local"]
+completed_age = _tdate.year - _bdate.year - (
+    1 if (_tdate.month, _tdate.day) < (_bdate.month, _bdate.day) else 0
+)
+running_year = completed_age + 1
+age = running_year  # used for the BCP house + caption
+active_house = bcp_house_from_age(running_year)
 
-st.caption(f"BCP Activation: Age **{age}** → Activated House **{active_house}**")
+t_head_l, t_head_r = st.columns([2.4, 1.0], vertical_alignment="bottom")
+with t_head_l:
+    st.subheader("Transit Chart")
+with t_head_r:
+    transit_view = st.selectbox(
+        "Transit chart", ["Transit", "BCP"], index=0, key="transit_view",
+        help="Transit = plain transit chart. BCP = highlights the activated house for the selected date.",
+    )
 
 center_tr = [
     f"<b>{name or '—'}</b>",
-    f"Transit year <b>{int(st.session_state['year'])}</b>",
-    f"{fmt_dmy(tran['dt_local'])} {tran['dt_local']:%H:%M:%S}",
+    f"Transit <b>{MONTHS[_tdate.month-1]} {_tdate.year}</b>",
+    f"{fmt_dmy(_tdate)} {_tdate:%H:%M:%S}",
 ]
-render_south_chart(
-    f"Transit Chart ({int(st.session_state['year'])})",
-    tran["planets"], tran["houses"], center_tr,
-    effective_mode, size_mode="full"
-)
+
+if transit_view == "BCP":
+    tran["houses"]["bcp_house"] = active_house
+    tran["houses"]["bcp_age"] = age
+    st.caption(f"BCP Activation: Running year **{running_year}** (as of {fmt_dmy(_tdate)}) → Activated House **{active_house}**")
+    render_chart(
+        chart_style,
+        f"Transit BCP ({MONTHS[_tdate.month-1]} {_tdate.year})",
+        tran["planets"], tran["houses"], center_tr,
+        effective_mode, size_mode="full"
+    )
+else:
+    # Plain transit — no activation highlight or age caption.
+    tran["houses"].pop("bcp_house", None)
+    tran["houses"].pop("bcp_age", None)
+    render_chart(
+        chart_style,
+        f"Transit ({MONTHS[_tdate.month-1]} {_tdate.year})",
+        tran["planets"], tran["houses"], center_tr,
+        effective_mode, size_mode="full"
+    )
 
 # =========================================================
 # GRAPHS (Life + Career separate)
 # =========================================================
 st.divider()
 st.subheader("Graphs & Timeline")
+st.caption(
+    "Graph interpretation is based on the **D1 (Rasi)** chart with secondary progression, "
+    "**BCP** activation, and transits. The **D9 / D10** views on the birth chart are shown for "
+    "reference and discussion only — they are not part of the predictive model."
+)
 
-CHART_BG = "#0b0f17"
+CHART_BG = "#000000"
 GRID_COL = "rgba(255,255,255,0.28)"
 ZERO_COL = "rgba(255,255,255,0.55)"
 FONT_COL = "rgba(255,255,255,0.92)"
@@ -1552,4 +1986,4 @@ with tab1:
 with tab2:
     plot_engine(career_df, "Career / Profession Engine", "career")
 
-st.caption("City search is now stable: it updates only when you click **Search city** (no interruptions).")
+st.caption("Tip: type a city name and the best match auto-selects; refine with the State / Place dropdown.")
