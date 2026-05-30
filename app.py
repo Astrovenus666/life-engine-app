@@ -1489,7 +1489,10 @@ row1 = st.columns([1.3, 1.2, 1.7, 1.8], vertical_alignment="top")
 with row1[0]:
     name = st.text_input("Name", value=default_name, placeholder="Enter name…")
 with row1[1]:
-    dob = st.date_input("DOB", value=default_dob, format="DD/MM/YYYY")
+    dob = st.date_input(
+        "DOB", value=default_dob, format="DD/MM/YYYY",
+        min_value=date(1800, 1, 1), max_value=date(2100, 12, 31),
+    )
 with row1[2]:
     # Use Streamlit's own label element (not a custom div) so the boxes line up
     # on the exact same baseline as Name / DOB. Label turns red if required
