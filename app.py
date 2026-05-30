@@ -1522,15 +1522,14 @@ country_code = country_name_to_code[country]
 
 # Row 1b: City/Town — offline geonamescache search (reliable everywhere),
 # with an online Nominatim fallback only for places the offline list misses.
-if "place_query" not in st.session_state:
-    st.session_state["place_query"] = "Hyderabad"
-
+# Box starts EMPTY (placeholder hint only) so the user types their own city
+# without first backspacing a default.
 city_row = st.columns([3.0, 1.0], vertical_alignment="bottom")
 with city_row[0]:
     place_query = st.text_input(
         "City/Town  (type to search)",
         key="place_query",
-        placeholder="Type a city or town…",
+        placeholder="Type your city or town…",
     ).strip()
 with city_row[1]:
     st.markdown('<div style="height:1.85rem;"></div>', unsafe_allow_html=True)
