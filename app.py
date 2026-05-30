@@ -399,7 +399,8 @@ def _get_geocoder():
 
 @st.cache_data(show_spinner=False)
 def geocode_place(query: str, country_name: str):
-    """Return a list of candidate dicts: name, state, district, display, lat, lon."""
+    """Online fallback via Nominatim — only used when the offline list misses.
+    Returns a list of candidate dicts: name, state, district, display, lat, lon."""
     q = (query or "").strip()
     if not q:
         return []
@@ -420,7 +421,6 @@ def geocode_place(query: str, country_name: str):
                 or addr.get("hamlet") or addr.get("municipality") or q.title())
         district = (addr.get("state_district") or addr.get("county") or "")
         state = addr.get("state") or ""
-        # Build "Town, District, State" (skip blanks)
         label_parts = [p for p in [town, district, state] if p]
         out.append({
             "name": town,
@@ -430,7 +430,6 @@ def geocode_place(query: str, country_name: str):
             "lat": float(r.latitude),
             "lon": float(r.longitude),
         })
-    # de-duplicate by display text, preserve order
     seen, uniq = set(), []
     for o in out:
         if o["display"] in seen:
@@ -438,6 +437,29 @@ def geocode_place(query: str, country_name: str):
         seen.add(o["display"])
         uniq.append(o)
     return uniq
+
+def offline_city_matches(city_df, country_code: str, query: str, limit: int = 30):
+    """Primary city search — fully offline via geonamescache. Reliable everywhere
+    (no internet, no rate limits). Returns a list of candidate dicts shaped like
+    the online geocoder's output so the UI can treat them identically."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    m = find_city_matches_stable(city_df, country_code, q, limit=limit)
+    out = []
+    for _, r in m.iterrows():
+        name = str(r["name"])
+        state = str(r.get("state_name", "") or "")
+        label_parts = [p for p in [name, state] if p]
+        out.append({
+            "name": name,
+            "district": "",
+            "state": state,
+            "display": ", ".join(label_parts) if label_parts else name,
+            "lat": float(r["lat"]),
+            "lon": float(r["lon"]),
+        })
+    return out
 
 # =========================================================
 # BCP helpers
@@ -1498,47 +1520,60 @@ with row1[3]:
 
 country_code = country_name_to_code[country]
 
-# Row 1b: free-type City/Town and State box (resolves worldwide via OpenStreetMap)
+# Row 1b: City/Town — offline geonamescache search (reliable everywhere),
+# with an online Nominatim fallback only for places the offline list misses.
+if "place_query" not in st.session_state:
+    st.session_state["place_query"] = "Hyderabad"
+
 city_row = st.columns([3.0, 1.0], vertical_alignment="bottom")
 with city_row[0]:
-    if "place_query" not in st.session_state:
-        st.session_state["place_query"] = st.session_state.get("city_query", "Hyderabad")
     place_query = st.text_input(
-        "City/Town",
+        "City/Town  (type to search)",
         key="place_query",
-        placeholder="Type a city, town, or village and press Enter…",
+        placeholder="Type a city or town…",
     ).strip()
 with city_row[1]:
     st.markdown('<div style="height:1.85rem;"></div>', unsafe_allow_html=True)
-    find_clicked = st.button("Find place", use_container_width=True)
+    online_clicked = st.button("Search online", use_container_width=True,
+                               help="Only needed for small villages the offline list doesn't have.")
 
-# Geocode (cached). Runs when the user submits the text box or clicks Find.
-candidates = geocode_place(place_query, country) if place_query else []
+# 1) Primary: offline match (instant, no internet).
+candidates = offline_city_matches(city_df, country_code, place_query)
+source = "offline"
 
-if not candidates:
-    if place_query:
-        st.warning(
-            f"Couldn't find “{place_query}” in {country}. "
-            "Check spelling, or try the district/nearest town."
-        )
-    else:
-        st.info("Enter your birthplace above (city, town, or village) and press Enter.")
+# 2) Fallback: if offline finds nothing (or user explicitly clicks Search online),
+#    try Nominatim and degrade gracefully if it's blocked.
+if place_query and (not candidates or online_clicked):
+    online = geocode_place(place_query, country)
+    if online:
+        candidates = online
+        source = "online"
+
+if not place_query:
+    st.info("Type your birthplace above to search.")
     st.stop()
 
-# If more than one candidate, let the user confirm which; first is auto-selected.
-if len(candidates) == 1:
-    chosen = candidates[0]
-    st.caption(f"Resolved place: **{chosen['display']}**")
-else:
-    disp = [c["display"] for c in candidates]
-    pick = st.selectbox(
-        "Confirm exact place",
-        options=range(len(disp)),
-        index=0,
-        format_func=lambda i: disp[i],
-        help="Multiple matches found — pick the correct one.",
+if not candidates:
+    st.warning(
+        f"Couldn't find “{place_query}” in {country}. "
+        "Check the spelling, or try the nearest town/district. "
+        "If it's a small village, click **Search online**."
     )
-    chosen = candidates[pick]
+    st.stop()
+
+# Single dropdown of matches (offline or online) — type narrows the list above,
+# then pick the exact place here.
+disp = [c["display"] for c in candidates]
+pick = st.selectbox(
+    "Select your place",
+    options=range(len(disp)),
+    index=0,
+    format_func=lambda i: disp[i],
+    help="Pick the correct match. Most populous matches appear first.",
+)
+chosen = candidates[pick]
+if source == "online":
+    st.caption("Resolved via online lookup.")
 
 # Build a row-like object compatible with resolve_place().
 sel_row = pd.Series({
