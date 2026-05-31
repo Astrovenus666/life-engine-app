@@ -129,6 +129,55 @@ st.markdown(
         background-color: rgba(0, 200, 140, 0.22) !important;
         box-shadow: inset 3px 0 0 #00c88c;
     }
+
+    /* ---------------------------------------------------------------
+       FORCE DARK READABILITY.
+       Even if a user flips Streamlit to Light/System from the toolbar
+       menu, the app background stays black, so we must force all text,
+       headings, labels and input text to readable light colors. This
+       guarantees the UI is never the "dark text on black" broken state.
+       --------------------------------------------------------------- */
+    :root { color-scheme: dark !important; }
+    .stApp { color: #f5f5f5 !important; }
+    /* Titles, headings, body text, captions, markdown */
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
+    .stApp p, .stApp span, .stApp label, .stApp li,
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"] * {
+        color: #f5f5f5 !important;
+    }
+    /* Widget labels (Name, DOB, Country, etc.) */
+    [data-testid="stWidgetLabel"],
+    [data-testid="stWidgetLabel"] * ,
+    label[data-testid="stWidgetLabel"] p {
+        color: #f5f5f5 !important;
+    }
+    /* Text/number/date input fields: dark box, light text */
+    .stTextInput input, .stNumberInput input, .stDateInput input,
+    [data-baseweb="input"] input, [data-baseweb="base-input"] input {
+        color: #f5f5f5 !important;
+        background-color: #1c1c1f !important;
+        -webkit-text-fill-color: #f5f5f5 !important;
+    }
+    .stTextInput div[data-baseweb="input"],
+    .stNumberInput div[data-baseweb="input"],
+    .stDateInput div[data-baseweb="input"] {
+        background-color: #1c1c1f !important;
+        border-radius: 8px !important;
+    }
+    /* Selectbox closed control: dark box, light text */
+    div[data-baseweb="select"] > div {
+        background-color: #1c1c1f !important;
+        color: #f5f5f5 !important;
+    }
+    div[data-baseweb="select"] div { color: #f5f5f5 !important; }
+    /* Placeholder hint text (HH/MM/SS, city) a touch dimmer but visible */
+    input::placeholder { color: #9aa0a6 !important; opacity: 1 !important; }
+
+    /* Hide Streamlit's top-right toolbar menu (where System/Light/Dark lives)
+       so users can't accidentally flip to a theme that looks broken. */
+    [data-testid="stToolbar"] { display: none !important; }
+    #MainMenu { visibility: hidden !important; }
     </style>
     """,
     unsafe_allow_html=True,
