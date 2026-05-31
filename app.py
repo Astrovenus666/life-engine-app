@@ -1664,7 +1664,11 @@ def recompute_all():
     birth_local = st.session_state.get("birth_local")
     lat = st.session_state.get("lat")
     lon = st.session_state.get("lon")
-    sid_mode_key = st.session_state.get("sid_mode_key")
+    # Derive ayanamsha FRESH from the UI selector so a change applies immediately
+    # (not silently using a stale value). Keep sid_mode_key in sync.
+    _ui_sid = st.session_state.get("sid_mode_ui", "KRISHNAMURTI (KP)")
+    sid_mode_key = "KRISHNAMURTI" if "KRISHNAMURTI" in _ui_sid else "LAHIRI"
+    st.session_state["sid_mode_key"] = sid_mode_key
     progression_type = st.session_state.get("progression_type")
     if birth_local is None or lat is None or lon is None or sid_mode_key is None or progression_type is None:
         return
@@ -1707,7 +1711,9 @@ def recompute_year_only():
     birth_local = st.session_state.get("birth_local")
     lat = st.session_state.get("lat")
     lon = st.session_state.get("lon")
-    sid_mode_key = st.session_state.get("sid_mode_key")
+    _ui_sid = st.session_state.get("sid_mode_ui", "KRISHNAMURTI (KP)")
+    sid_mode_key = "KRISHNAMURTI" if "KRISHNAMURTI" in _ui_sid else "LAHIRI"
+    st.session_state["sid_mode_key"] = sid_mode_key
     progression_type = st.session_state.get("progression_type")
     if birth_local is None or lat is None or lon is None or sid_mode_key is None or progression_type is None:
         return
@@ -1938,14 +1944,14 @@ with day_row[0]:
         pass
     def _on_day_change():
         lbl = st.session_state.get("sel_day_label")
-        st.session_state["sel_day"] = None if lbl == "(birth day)" else lbl
+        st.session_state["sel_day"] = None if lbl == "(default)" else lbl
         recompute_year_only()
     st.selectbox(
         "Day (optional)",
-        ["(birth day)"] + list(range(1, _last_day + 1)),
+        ["(default)"] + list(range(1, _last_day + 1)),
         key="sel_day_label",
         on_change=_on_day_change,
-        help="Pick a specific day for transit/progressed charts, or leave as birth day.",
+        help="Pick a specific day for transit/progressed charts. '(default)' uses the day-of-month from your birth date.",
     )
 with day_row[1]:
     st.text_input("HH", key="sel_hh", placeholder="HH", max_chars=2,

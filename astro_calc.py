@@ -379,12 +379,25 @@ def compute_transit_chart(birth_local: datetime, lat: float, lon_east: float, tr
     return {"planets": planets, "houses": houses, "dt_local": dt_local, "dt_utc": dt_utc, "sid_mode": sid_mode}
 
 def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None, day: int | None = None, hh: int | None = None, mm: int | None = None, ss: int | None = None) -> dict:
+    # Planets: reflect the (optionally) finer month/day/time selection. In secondary
+    # progression these move only very slightly across a year, but we honor the pick.
     target_local = _target_date(birth_local, target_year, month, day, hh, mm, ss)
     age_days = (target_local - birth_local).total_seconds() / 86400.0
     progressed_local = birth_local + timedelta(days=age_days / DAYS_PER_YEAR)
     progressed_utc = progressed_local.astimezone(ZoneInfo("UTC"))
     planets = calc_sidereal_planets(progressed_utc, sid_mode=sid_mode)
-    houses = calc_houses(progressed_utc, lat, lon_east, sid_mode=sid_mode)
+
+    # Cusps/ascendant: anchored to ONE yearly moment so they stay stable across all
+    # months of a year and advance only ~1 deg/year (matching RVA, which shows a
+    # single set of progressed cusps per year). We use the BIRTH time-of-day on the
+    # yearly progressed date, NOT the month/day/time-shifted moment — otherwise the
+    # ascendant lurches whole signs when the progressed clock crosses midnight.
+    yearly_target = birth_local.replace(year=int(target_year), microsecond=0)
+    yearly_age_days = (yearly_target - birth_local).total_seconds() / 86400.0
+    yearly_prog_local = birth_local + timedelta(days=yearly_age_days / DAYS_PER_YEAR)
+    yearly_prog_utc = yearly_prog_local.astimezone(ZoneInfo("UTC"))
+    houses = calc_houses(yearly_prog_utc, lat, lon_east, sid_mode=sid_mode)
+
     return {"planets": planets, "houses": houses, "dt_local": progressed_local, "dt_utc": progressed_utc, "sid_mode": sid_mode}
 
 def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None, day: int | None = None, hh: int | None = None, mm: int | None = None, ss: int | None = None) -> dict:
