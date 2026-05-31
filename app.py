@@ -255,6 +255,83 @@ st.markdown(
        so users can't accidentally flip to a theme that looks broken. */
     [data-testid="stToolbar"] { display: none !important; }
     #MainMenu { visibility: hidden !important; }
+
+    /* ---------------------------------------------------------------
+       AGGRESSIVE BUTTON DARK FIX. Catch the "Search online" button no
+       matter how Streamlit wraps it. Covers all non-primary buttons in
+       the main area, every state (default/hover/focus/active).
+       --------------------------------------------------------------- */
+    button[kind="secondary"],
+    button[data-testid="baseButton-secondary"],
+    .stButton button:not([kind="primary"]):not([data-testid="baseButton-primary"]),
+    [data-testid="stButton"] button:not([kind="primary"]) {
+        background-color: #1c1c1f !important;
+        background: #1c1c1f !important;
+        color: #f5f5f5 !important;
+        border: 1px solid #3a3a40 !important;
+    }
+    button[kind="secondary"]:hover,
+    .stButton button:not([kind="primary"]):hover,
+    button[kind="secondary"]:focus,
+    button[kind="secondary"]:active {
+        background-color: #2a2a30 !important;
+        background: #2a2a30 !important;
+        color: #ffffff !important;
+        border-color: #15803d !important;
+    }
+    button[kind="secondary"] p,
+    .stButton button:not([kind="primary"]) p,
+    .stButton button:not([kind="primary"]) span,
+    .stButton button:not([kind="primary"]) div {
+        color: #f5f5f5 !important;
+    }
+    /* re-assert sidebar buttons stay transparent green */
+    section[data-testid="stSidebar"] .stButton button {
+        background: transparent !important;
+        background-color: transparent !important;
+        color: #1e9e5a !important;
+        border: 1.6px solid #1e9e5a !important;
+    }
+
+    /* ---------------------------------------------------------------
+       MOBILE LAYOUT FIX. On narrow screens Streamlit's horizontal
+       columns squeeze and misalign (the HH/MM/SS boxes, the top row).
+       Force columns to stack vertically and go full width on phones.
+       --------------------------------------------------------------- */
+    @media (max-width: 640px) {
+        /* make each horizontal block wrap so columns stack */
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            gap: 10px !important;
+        }
+        /* each column takes full width when stacked */
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex: 1 1 100% !important;
+            width: 100% !important;
+            min-width: 100% !important;
+        }
+        /* EXCEPTION: keep HH / MM / SS three-across (they're small) */
+        [data-testid="stHorizontalBlock"]:has(input[aria-label="Hour"]) > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"]:has(input[aria-label="Hour"]) > [data-testid="column"] {
+            flex: 1 1 30% !important;
+            width: 30% !important;
+            min-width: 30% !important;
+        }
+        /* inputs/selects fill width and don't overflow */
+        .stTextInput, .stDateInput, .stNumberInput, .stSelectbox,
+        .stTextInput input, .stDateInput input, .stNumberInput input {
+            width: 100% !important;
+            box-sizing: border-box !important;
+        }
+        /* trim side padding so nothing gets cut off on the left */
+        .block-container {
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+        }
+        /* big title shouldn't overflow */
+        h1 { font-size: 2rem !important; word-break: break-word !important; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
