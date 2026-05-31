@@ -1918,9 +1918,10 @@ else:
 st.divider()
 st.subheader("Graphs & Timeline")
 st.caption(
-    "Graph interpretation is based on the **D1 (Rasi)** chart with secondary progression, "
-    "**BCP** activation, and transits. The **D9 / D10** views on the birth chart are shown for "
-    "reference and discussion only — they are not part of the predictive model."
+    "Graph interpretation is based on the **D1 (Rasi)** chart with the selected "
+    "ayanamsha and progression type, **BCP** activation, and transits. The **D9 / D10** "
+    "views on the birth chart are shown for reference and discussion only — they are not "
+    "part of the predictive model."
 )
 
 CHART_BG = "#000000"
