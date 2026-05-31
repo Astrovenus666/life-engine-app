@@ -353,25 +353,33 @@ def compute_birth_chart(birth_local: datetime, lat: float, lon_east: float, sid_
         "sid_mode": sid_mode,
     }
 
-def _target_date(birth_local: datetime, year: int, month: int | None) -> datetime:
-    """Build the local target date for a given year (and optional month),
-    keeping the birth day-of-month. Falls back safely if the day overflows
-    a short month (e.g. birth day 31 in a 30-day month)."""
+def _target_date(birth_local: datetime, year: int, month: int | None,
+                 day: int | None = None,
+                 hh: int | None = None, mm: int | None = None, ss: int | None = None) -> datetime:
+    """Build the local target date for a given year (and optional month/day/time),
+    keeping the birth day-of-month and birth time-of-day unless explicitly overridden.
+    Falls back safely if the day overflows a short month (e.g. day 31 in a 30-day month)."""
     import calendar
     m = int(month) if month else birth_local.month
     last_day = calendar.monthrange(int(year), m)[1]
-    day = min(birth_local.day, last_day)
-    return birth_local.replace(year=int(year), month=m, day=day)
+    if day is not None:
+        d = min(int(day), last_day)
+    else:
+        d = min(birth_local.day, last_day)
+    H = int(hh) if hh is not None else birth_local.hour
+    M = int(mm) if mm is not None else birth_local.minute
+    S = int(ss) if ss is not None else birth_local.second
+    return birth_local.replace(year=int(year), month=m, day=d, hour=H, minute=M, second=S, microsecond=0)
 
-def compute_transit_chart(birth_local: datetime, lat: float, lon_east: float, transit_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None) -> dict:
-    dt_local = _target_date(birth_local, transit_year, month)
+def compute_transit_chart(birth_local: datetime, lat: float, lon_east: float, transit_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None, day: int | None = None, hh: int | None = None, mm: int | None = None, ss: int | None = None) -> dict:
+    dt_local = _target_date(birth_local, transit_year, month, day, hh, mm, ss)
     dt_utc = dt_local.astimezone(ZoneInfo("UTC"))
     planets = calc_sidereal_planets(dt_utc, sid_mode=sid_mode)
     houses = calc_houses(dt_utc, lat, lon_east, sid_mode=sid_mode)
     return {"planets": planets, "houses": houses, "dt_local": dt_local, "dt_utc": dt_utc, "sid_mode": sid_mode}
 
-def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None) -> dict:
-    target_local = _target_date(birth_local, target_year, month)
+def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None, day: int | None = None, hh: int | None = None, mm: int | None = None, ss: int | None = None) -> dict:
+    target_local = _target_date(birth_local, target_year, month, day, hh, mm, ss)
     age_days = (target_local - birth_local).total_seconds() / 86400.0
     progressed_local = birth_local + timedelta(days=age_days / DAYS_PER_YEAR)
     progressed_utc = progressed_local.astimezone(ZoneInfo("UTC"))
@@ -379,7 +387,7 @@ def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float,
     houses = calc_houses(progressed_utc, lat, lon_east, sid_mode=sid_mode)
     return {"planets": planets, "houses": houses, "dt_local": progressed_local, "dt_utc": progressed_utc, "sid_mode": sid_mode}
 
-def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None) -> dict:
+def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None, day: int | None = None, hh: int | None = None, mm: int | None = None, ss: int | None = None) -> dict:
     """
     Solar Arc (simple):
       arc = progressed_sun_lon (secondary) - natal_sun_lon
@@ -387,7 +395,7 @@ def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, 
     Retro is not used for directed positions -> retro=False.
     """
     natal = compute_birth_chart(birth_local, lat, lon_east, sid_mode=sid_mode)
-    prog = compute_progressed_chart(birth_local, lat, lon_east, target_year, sid_mode=sid_mode, month=month)
+    prog = compute_progressed_chart(birth_local, lat, lon_east, target_year, sid_mode=sid_mode, month=month, day=day, hh=hh, mm=mm, ss=ss)
 
     natal_sun = next(p for p in natal["planets"] if p.name == "Sun")
     prog_sun = next(p for p in prog["planets"] if p.name == "Sun")
@@ -427,5 +435,5 @@ def compute_solar_arc_chart(birth_local: datetime, lat: float, lon_east: float, 
         "mc_sid": mc_sid, "mc_sign": mc_sign, "mc_deg": mc_deg,
     }
 
-    dt_local = _target_date(birth_local, target_year, month)
+    dt_local = _target_date(birth_local, target_year, month, day, hh, mm, ss)
     return {"planets": directed_planets, "houses": houses_dir, "dt_local": dt_local, "dt_utc": dt_local.astimezone(ZoneInfo("UTC")), "sid_mode": sid_mode}

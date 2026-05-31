@@ -481,6 +481,23 @@ def cusp_str(cusp_info: dict, house_num: int) -> str:
         return ""
     return f"{fmt_deg(ci['deg'])}{SIGN_GLYPH.get(ci['sign'], '')}"
 
+def cusp_str_for_sign(cusp_info: dict, sign: str) -> str:
+    """Return the Placidus cusp DEGREE label that falls in the given SIGN cell.
+    South/North Indian charts are sign-based; RVA shows the Placidus cusp whose
+    sign matches the cell. A sign may contain zero cusps (blank) or, rarely, more
+    than one (show all). This matches RVA's Placidus cusp labelling exactly."""
+    matches = [h for h in range(1, 13)
+               if h in cusp_info and cusp_info[h]["sign"] == sign]
+    if not matches:
+        return ""
+    # Skip whole-sign 0° cusps (divisional charts) to avoid "00:00:00" clutter
+    parts = []
+    for h in matches:
+        d = cusp_info[h]["deg"]
+        if d >= 0.0001:
+            parts.append(fmt_deg(d))
+    return ", ".join(parts)
+
 def to_naive_ts(x):
     t = pd.to_datetime(x, errors="coerce")
     if pd.isna(t):
@@ -759,6 +776,8 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
     cusp_info = houses["cusp_info"]
     activation_house = houses.get("bcp_house")
     bcp_age = houses.get("bcp_age")
+    bcp_sign = houses.get("bcp_sign")            # natal-anchored activated SIGN
+    bcp_natal_asc = houses.get("bcp_natal_asc")  # natal ascendant sign
 
     sign_map = {s: [] for s in SIGNS}
     for p in planets:
@@ -817,15 +836,20 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
     def cell_content(sign: str) -> str:
         h = house_for_sign(asc_sign, sign)
         lagna = " (L)" if h == 1 else ""
-        cusp = cusp_str(cusp_info, h)
+        cusp = cusp_str_for_sign(cusp_info, sign)
         glyph = SIGN_GLYPH.get(sign, "")
 
-        activated = (activation_house == h)
+        activated = (bcp_sign is not None and sign == bcp_sign)
         cls = "hnum activated" if activated else "hnum"
 
         age_tag = ""
-        if isinstance(bcp_age, int) and isinstance(activation_house, int):
-            age_here = bcp_age_for_house(bcp_age, activation_house, h)
+        if isinstance(bcp_age, int) and bcp_natal_asc is not None:
+            # Count the running-year age for THIS sign, anchored to the natal
+            # ascendant so labels stay fixed all year (independent of transit asc).
+            natal_idx = SIGNS.index(bcp_natal_asc)
+            sign_house_from_natal = ((SIGNS.index(sign) - natal_idx) % 12) + 1
+            active_from_natal = ((SIGNS.index(bcp_sign) - natal_idx) % 12) + 1
+            age_here = bcp_age_for_house(bcp_age, active_from_natal, sign_house_from_natal)
             if age_here >= 0:
                 age_tag = f" <span class='age'>[{age_here}]</span>"
 
@@ -967,8 +991,11 @@ def render_south_chart(chart_title: str, planets, houses, center_lines: list[str
 def north_chart_html(chart_title: str, planets, houses, effective_mode: str, size_mode: str) -> str:
     asc_sign = houses["asc_sign"]
     asc_idx = sign_index(asc_sign)  # 0-based; sign number in house = (asc_idx + h-1)%12 + 1
+    cusp_info = houses["cusp_info"]
     activation_house = houses.get("bcp_house")  # BCP-activated house for that year (transit)
     bcp_age = houses.get("bcp_age")
+    bcp_sign = houses.get("bcp_sign")            # natal-anchored activated SIGN
+    bcp_natal_asc = houses.get("bcp_natal_asc")  # natal ascendant sign
 
     # planets grouped by house number (1..12), using same data as South chart
     house_planets = {h: [] for h in range(1, 13)}
@@ -1052,12 +1079,16 @@ def north_chart_html(chart_title: str, planets, houses, effective_mode: str, siz
         else:
             planet_offset = sign_fs + 2
 
-        is_active = (activation_house == h)
+        is_active = (bcp_sign is not None and SIGNS[s_idx] == bcp_sign)
 
-        # BCP age for this house (only when transit data present; hide if negative)
+        # BCP age for this house, anchored to the NATAL ascendant so labels stay
+        # fixed for the whole running year (independent of the transit ascendant).
         age_str = ""
-        if isinstance(bcp_age, int) and isinstance(activation_house, int):
-            age_here = bcp_age_for_house(bcp_age, activation_house, h)
+        if isinstance(bcp_age, int) and bcp_natal_asc is not None and bcp_sign is not None:
+            natal_idx = SIGNS.index(bcp_natal_asc)
+            sign_house_from_natal = ((s_idx - natal_idx) % 12) + 1
+            active_from_natal = ((SIGNS.index(bcp_sign) - natal_idx) % 12) + 1
+            age_here = bcp_age_for_house(bcp_age, active_from_natal, sign_house_from_natal)
             if age_here >= 0:
                 age_str = f"[{age_here}]"
 
@@ -1081,6 +1112,14 @@ def north_chart_html(chart_title: str, planets, houses, effective_mode: str, siz
         # sign number + glyph
         svg.append(f'<text x="{ax:.1f}" y="{ay:.1f}" fill="{sign_col}" font-size="{sign_fs}" '
                    f'font-weight="800" text-anchor="middle">{sign_no} {glyph}</text>')
+        # Placidus cusp degree for the sign that sits in this house (matches RVA)
+        cusp_lbl = cusp_str_for_sign(cusp_info, SIGNS[s_idx])
+        cusp_extra = 0
+        if cusp_lbl:
+            cusp_y = ay + sign_fs + 1
+            svg.append(f'<text x="{ax:.1f}" y="{cusp_y:.1f}" fill="#ffd37a" '
+                       f'font-size="{pl_fs - 1}" font-weight="700" text-anchor="middle">{cusp_lbl}</text>')
+            cusp_extra = pl_fs + 1
         # planets, stacked just below the sign marker (and below Roman if it moved down)
         plist = house_planets.get(h, [])
         for i, p in enumerate(plist):
@@ -1090,11 +1129,11 @@ def north_chart_html(chart_title: str, planets, houses, effective_mode: str, siz
                 disp = ab
             else:
                 disp = "[" + ab + "]" if getattr(p, "retro", False) else ab
-            deg = int(p.deg_in_sign)
+            deg = fmt_deg(p.deg_in_sign)
             col = planet_colors.get(p.name, text_col)
-            py = ay + planet_offset + i * (pl_fs + 3)
+            py = ay + planet_offset + cusp_extra + i * (pl_fs + 3)
             svg.append(f'<text x="{ax:.1f}" y="{py:.1f}" fill="{col}" font-size="{pl_fs}" '
-                       f'font-weight="700" text-anchor="middle">{disp} {deg}\u00b0</text>')
+                       f'font-weight="700" text-anchor="middle">{disp} {deg}</text>')
 
     svg.append('</svg></div>')
     return "".join(svg)
@@ -1602,6 +1641,23 @@ def score_to_0_1000(series: pd.Series, dates: pd.Series, baseline_year: int | No
 # =========================================================
 # Recompute
 # =========================================================
+def _sel_day_time():
+    """Read the optional Day + HH:MM:SS selectors for transit/progressed.
+    Returns (day, hh, mm, ss) where any unset value is None (so the engine
+    falls back to the birth day-of-month / birth time-of-day)."""
+    def _intval(key):
+        v = st.session_state.get(key, "")
+        v = (str(v).strip() if v is not None else "")
+        if v == "":
+            return None
+        try:
+            return int(v)
+        except ValueError:
+            return None
+    day = st.session_state.get("sel_day", None)
+    day = int(day) if day else None
+    return day, _intval("sel_hh"), _intval("sel_mm"), _intval("sel_ss")
+
 def recompute_all():
     if not st.session_state.get("has_run"):
         return
@@ -1618,12 +1674,13 @@ def recompute_all():
 
     year = int(st.session_state.get("year", datetime.now().year))
     sel_month = int(st.session_state.get("sel_month", birth_local.month))
-    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
+    _d, _hh, _mm, _ss = _sel_day_time()
+    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month, day=_d, hh=_hh, mm=_mm, ss=_ss)
 
     if progression_type.startswith("Secondary"):
-        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
+        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month, day=_d, hh=_hh, mm=_mm, ss=_ss)
     else:
-        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
+        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month, day=_d, hh=_hh, mm=_mm, ss=_ss)
 
     st.session_state["life_df"] = generate_general_life_df(
         birth_local=birth_local,
@@ -1657,11 +1714,12 @@ def recompute_year_only():
 
     year = int(st.session_state.get("year", datetime.now().year))
     sel_month = int(st.session_state.get("sel_month", birth_local.month))
-    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
+    _d, _hh, _mm, _ss = _sel_day_time()
+    st.session_state["tran"] = compute_transit_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month, day=_d, hh=_hh, mm=_mm, ss=_ss)
     if progression_type.startswith("Secondary"):
-        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
+        st.session_state["prog"] = compute_progressed_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month, day=_d, hh=_hh, mm=_mm, ss=_ss)
     else:
-        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month)
+        st.session_state["prog"] = compute_solar_arc_chart(birth_local, lat, lon, year, sid_mode=sid_mode_key, month=sel_month, day=_d, hh=_hh, mm=_mm, ss=_ss)
 
 # =========================================================
 # UI Inputs
@@ -1867,6 +1925,41 @@ with row2[3]:
 with row2[4]:
     compute_now = st.button("Compute", type="primary", use_container_width=True)
 
+# Optional Day + time-of-day for transit/progressed (our unique granularity).
+# Leave blank to use the birth day-of-month and birth time-of-day.
+day_row = st.columns([1.2, 1.0, 1.0, 1.0, 2.6], vertical_alignment="bottom")
+with day_row[0]:
+    _last_day = 31
+    try:
+        import calendar as _cal
+        _last_day = _cal.monthrange(int(st.session_state.get("year", datetime.now().year)),
+                                    int(st.session_state.get("sel_month", dob.month)))[1]
+    except Exception:
+        pass
+    def _on_day_change():
+        lbl = st.session_state.get("sel_day_label")
+        st.session_state["sel_day"] = None if lbl == "(birth day)" else lbl
+        recompute_year_only()
+    st.selectbox(
+        "Day (optional)",
+        ["(birth day)"] + list(range(1, _last_day + 1)),
+        key="sel_day_label",
+        on_change=_on_day_change,
+        help="Pick a specific day for transit/progressed charts, or leave as birth day.",
+    )
+with day_row[1]:
+    st.text_input("HH", key="sel_hh", placeholder="HH", max_chars=2,
+                  on_change=recompute_year_only, help="Hour (0-23) for transit/progressed. Blank = birth time.")
+with day_row[2]:
+    st.text_input("MM", key="sel_mm", placeholder="MM", max_chars=2,
+                  on_change=recompute_year_only)
+with day_row[3]:
+    st.text_input("SS", key="sel_ss", placeholder="SS", max_chars=2,
+                  on_change=recompute_year_only)
+with day_row[4]:
+    st.caption("Day/time are optional — they refine transit & progressed timing. "
+               "Leave blank to use your birth day-of-month and birth time.")
+
 sid_mode_key = "KRISHNAMURTI" if "KRISHNAMURTI" in sid_mode else "LAHIRI"
 
 # (City matching + State/Place picker already handled in row 1 above; sel_row is set.)
@@ -2030,6 +2123,14 @@ running_year = completed_age + 1
 age = running_year  # used for the BCP house + caption
 active_house = bcp_house_from_age(running_year)
 
+# BCP must be anchored to the NATAL ascendant, so the activated SIGN stays fixed
+# for the whole running year (it should not drift month-to-month with the transit
+# ascendant). Compute the activated sign by counting from the natal Lagna, and
+# the renderers will highlight whichever transit house carries that sign.
+_natal_asc_sign = birth["houses"]["asc_sign"]
+_natal_asc_idx = SIGNS.index(_natal_asc_sign)
+bcp_activated_sign = SIGNS[(_natal_asc_idx + (active_house - 1)) % 12]
+
 t_head_l, t_head_r = st.columns([2.4, 1.0], vertical_alignment="bottom")
 with t_head_l:
     st.subheader("Transit Chart")
@@ -2048,7 +2149,9 @@ center_tr = [
 if transit_view == "BCP":
     tran["houses"]["bcp_house"] = active_house
     tran["houses"]["bcp_age"] = age
-    st.caption(f"BCP Activation: Running year **{running_year}** (as of {fmt_dmy(_tdate)}) → Activated House **{active_house}**")
+    tran["houses"]["bcp_sign"] = bcp_activated_sign
+    tran["houses"]["bcp_natal_asc"] = _natal_asc_sign
+    st.caption(f"BCP Activation: Running year **{running_year}** (as of {fmt_dmy(_tdate)}) → Activated House **{active_house}** from natal Lagna ({bcp_activated_sign}, fixed for the whole running year)")
     render_chart(
         chart_style,
         f"Transit BCP ({MONTHS[_tdate.month-1]} {_tdate.year})",
