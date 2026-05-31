@@ -206,6 +206,40 @@ st.markdown(
     div[data-baseweb="base-input"] {
         background-color: #1c1c1f !important;
     }
+    /* ---------------------------------------------------------------
+       MAIN-AREA BUTTONS (e.g. "Search online") must be dark by DEFAULT,
+       not only on hover. The earlier button rules were scoped to the
+       sidebar only, so main-area buttons stayed white until hovered.
+       --------------------------------------------------------------- */
+    div[data-testid="stButton"] > button,
+    div[data-testid="stButton"] > button[kind],
+    .stButton > button {
+        background-color: #1c1c1f !important;
+        color: #f5f5f5 !important;
+        border: 1px solid #3a3a40 !important;
+        border-radius: 8px !important;
+    }
+    div[data-testid="stButton"] > button:hover,
+    .stButton > button:hover {
+        background-color: #2a2a30 !important;
+        color: #ffffff !important;
+        border-color: #15803d !important;
+    }
+    /* keep the primary "Compute" button its accent color */
+    div[data-testid="stButton"] > button[kind="primary"] {
+        background-color: #e23744 !important;
+        color: #ffffff !important;
+        border: none !important;
+    }
+    div[data-testid="stButton"] > button[kind="primary"]:hover {
+        background-color: #c92d39 !important;
+    }
+    /* re-assert sidebar buttons (transparent green) override the above */
+    section[data-testid="stSidebar"] div[data-testid="stButton"] > button {
+        background: transparent !important;
+        color: #1e9e5a !important;
+        border: 1.6px solid #1e9e5a !important;
+    }
     /* the place dropdown highlighted/selected option (was white) */
     li[role="option"][aria-selected="true"] {
         background-color: #15803d !important;
