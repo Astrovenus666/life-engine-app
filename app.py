@@ -48,6 +48,9 @@ st.markdown(
     .main,
     .block-container {
         background: #000000 !important;
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
+        max-width: 100% !important;
     }
     [data-testid="stHeader"] {
         background: transparent !important;
@@ -173,6 +176,46 @@ st.markdown(
     div[data-baseweb="select"] div { color: #f5f5f5 !important; }
     /* Placeholder hint text (HH/MM/SS, city) a touch dimmer but visible */
     input::placeholder { color: #9aa0a6 !important; opacity: 1 !important; }
+
+    /* ---------------------------------------------------------------
+       FORCE DARK on dropdown POPUPS / MENUS / SEARCH (the white boxes).
+       Streamlit renders the open dropdown list and search popover in a
+       separate layer (baseweb popover/menu/listbox) that the earlier
+       rules didn't cover — so they stayed white. Force them all dark.
+       --------------------------------------------------------------- */
+    div[data-baseweb="popover"],
+    div[data-baseweb="popover"] > div,
+    div[data-baseweb="menu"],
+    div[data-baseweb="menu"] > div,
+    ul[role="listbox"],
+    div[data-baseweb="popover"] ul,
+    div[role="listbox"] {
+        background-color: #1c1c1f !important;
+        color: #f5f5f5 !important;
+        border: 1px solid #2c2c30 !important;
+    }
+    ul[role="listbox"] li,
+    div[data-baseweb="menu"] li,
+    div[data-baseweb="popover"] li,
+    li[role="option"] {
+        background-color: #1c1c1f !important;
+        color: #f5f5f5 !important;
+    }
+    /* the search-online text box / any baseweb input popover */
+    div[data-baseweb="input"],
+    div[data-baseweb="base-input"] {
+        background-color: #1c1c1f !important;
+    }
+    /* the place dropdown highlighted/selected option (was white) */
+    li[role="option"][aria-selected="true"] {
+        background-color: #15803d !important;
+        color: #ffffff !important;
+    }
+    /* catch any remaining white popover surfaces */
+    [data-baseweb="popover"] [class*="Menu"],
+    [data-baseweb="popover"] [class*="List"] {
+        background-color: #1c1c1f !important;
+    }
 
     /* Hide Streamlit's top-right toolbar menu (where System/Light/Dark lives)
        so users can't accidentally flip to a theme that looks broken. */
