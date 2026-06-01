@@ -498,6 +498,21 @@ def cusp_str_for_sign(cusp_info: dict, sign: str) -> str:
             parts.append(fmt_deg(d))
     return ", ".join(parts)
 
+def houses_in_sign(cusp_info: dict, sign: str, asc_sign: str | None = None) -> list:
+    """Return the house numbers whose PLACIDUS cusp falls in the given sign, matching
+    RVA: each house's Roman numeral appears in the sign where its actual Placidus cusp
+    lands (not by whole-sign counting). Normally exactly one house per sign; rarely two
+    cusps share a sign (then another sign has none) — we return all that match.
+
+    If cusp_info carries no real Placidus degrees (e.g. divisional charts use whole-sign
+    cusps at 0°), fall back to whole-sign numbering from asc_sign so those charts are
+    unaffected."""
+    placidus = any(cusp_info.get(h, {}).get("deg", 0.0) >= 0.0001 for h in range(1, 13))
+    if not placidus and asc_sign is not None:
+        return [house_for_sign(asc_sign, sign)]
+    return [h for h in range(1, 13)
+            if h in cusp_info and cusp_info[h].get("sign") == sign]
+
 def to_naive_ts(x):
     t = pd.to_datetime(x, errors="coerce")
     if pd.isna(t):
@@ -834,8 +849,9 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
         return f"<span style='color:{col}; font-weight:800;'>{text}</span>"
 
     def cell_content(sign: str) -> str:
-        h = house_for_sign(asc_sign, sign)
-        lagna = " (L)" if h == 1 else ""
+        # Houses whose Placidus cusp falls in this sign (RVA-style). Usually one;
+        # rarely two share a sign (then another sign is empty).
+        hs = houses_in_sign(cusp_info, sign, asc_sign)
         cusp = cusp_str_for_sign(cusp_info, sign)
         glyph = SIGN_GLYPH.get(sign, "")
 
@@ -843,7 +859,7 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
         cls = "hnum activated" if activated else "hnum"
 
         age_tag = ""
-        if isinstance(bcp_age, int) and bcp_natal_asc is not None:
+        if isinstance(bcp_age, int) and bcp_natal_asc is not None and bcp_sign is not None:
             # Count the running-year age for THIS sign, anchored to the natal
             # ascendant so labels stay fixed all year (independent of transit asc).
             natal_idx = SIGNS.index(bcp_natal_asc)
@@ -853,16 +869,25 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
             if age_here >= 0:
                 age_tag = f" <span class='age'>[{age_here}]</span>"
 
+        # Roman numeral(s) for this cell, with the Lagna marker on house 1.
+        if hs:
+            roman = " ".join(f"{ROMAN[h]}{' (L)' if h == 1 else ''}" for h in hs)
+        else:
+            roman = ""  # a sign with no Placidus cusp stays blank (rare)
+
         header = f"""
         <div class="hrow">
-          <span class="{cls}">{ROMAN[h]}{lagna}{age_tag}</span>
+          <span class="{cls}">{roman}{age_tag}</span>
           <span class="glyph">{glyph}</span>
           <span class="cusp">{cusp}</span>
         </div>
         """
+        bcp_label = ""
+        if activated and isinstance(bcp_age, int):
+            bcp_label = (f"<div class='bcplabel'>BCP 1st house · year [{bcp_age}]</div>")
         items = sign_map[sign]
         body = "<br>".join(colored_span(pn, txt) for pn, txt in items) if items else "&nbsp;"
-        return header + f"<div class='items'>{body}</div>"
+        return header + bcp_label + f"<div class='items'>{body}</div>"
 
     center_html = "<br>".join([f"<div class='cline'>{ln}</div>" for ln in center_lines])
 
@@ -930,6 +955,18 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
         background: linear-gradient(45deg, #f7ff00, #00ff88);
         color: #000 !important;
         box-shadow: 0 0 8px rgba(0,255,136,0.7), 0 0 16px rgba(247,255,0,0.5);
+      }}
+      .bcplabel {{
+        display: inline-block;
+        margin: 3px 0 2px;
+        padding: 2px 7px;
+        border-radius: 5px;
+        background: rgba(0,255,136,0.14);
+        border: 1px solid rgba(0,255,136,0.5);
+        color: #7CFF7C;
+        font-size: {cusp_fs - 1}px;
+        font-weight: 800;
+        white-space: nowrap;
       }}
       .cusp {{
         font-size: {cusp_fs}px;
@@ -1109,6 +1146,10 @@ def north_chart_html(chart_title: str, planets, houses, effective_mode: str, siz
         if age_str:
             svg.append(f'<text x="{ax:.1f}" y="{roman_y - roman_fs - 1:.1f}" fill="#9aa0a6" '
                        f'font-size="{roman_fs - 2}" font-weight="700" text-anchor="middle">{age_str}</text>')
+        # BCP "1st house" clarifier on the activated house (keeps transit Roman intact)
+        if is_active and isinstance(bcp_age, int):
+            svg.append(f'<text x="{ax:.1f}" y="{roman_y + roman_fs + 2:.1f}" fill="#7CFF7C" '
+                       f'font-size="{roman_fs - 3}" font-weight="800" text-anchor="middle">BCP 1st · [{bcp_age}]</text>')
         # sign number + glyph
         svg.append(f'<text x="{ax:.1f}" y="{ay:.1f}" fill="{sign_col}" font-size="{sign_fs}" '
                    f'font-weight="800" text-anchor="middle">{sign_no} {glyph}</text>')

@@ -133,7 +133,7 @@ def calc_sidereal_planets(dt_utc: datetime, sid_mode: str = "KRISHNAMURTI") -> l
 
     return out
 
-def calc_houses(dt_utc: datetime, lat: float, lon_east: float, sid_mode: str = "KRISHNAMURTI", _diag_label: str = "?") -> dict:
+def calc_houses(dt_utc: datetime, lat: float, lon_east: float, sid_mode: str = "KRISHNAMURTI") -> dict:
     """
     Placidus houses. Swiss gives tropical cusps; convert to sidereal by subtracting ayanamsa.
     Robust across different swe.houses_ex() return shapes.
@@ -168,30 +168,6 @@ def calc_houses(dt_utc: datetime, lat: float, lon_east: float, sid_mode: str = "
         lon = cusps_sid[h]
         s, d = sign_of(lon)
         cusp_info[h] = {"lon": lon, "sign": s, "deg": d}
-
-    # ===================== TEMPORARY DIAGNOSTIC (remove after) =====================
-    # Prints to Render logs so we can see whether the cusps[] array 10th matches the
-    # true MC (ascmc[1]). If they diverge, the cusps array isn't true Placidus on this
-    # build and we must derive angular cusps from ascmc instead.
-    try:
-        import sys as _sys
-        _c10_sign, _c10_deg = sign_of(cusps_sid[10])
-        _c1_sign, _c1_deg = sign_of(cusps_sid[1])
-        print(
-            "DIAG_HOUSES[%s] | utc=%s | len_cusps=%d | "
-            "ASC=%s %.4f | MC=%s %.4f | "
-            "cusp1=%s %.4f | cusp10=%s %.4f | ayan=%.5f"
-            % (
-                _diag_label, dt_utc.strftime("%Y-%m-%d %H:%M:%S"),
-                len(cusp_vals),
-                asc_sign, asc_deg, mc_sign, mc_deg,
-                _c1_sign, _c1_deg, _c10_sign, _c10_deg, ayan,
-            ),
-            file=_sys.stderr, flush=True,
-        )
-    except Exception as _e:
-        print("DIAG_HOUSES error:", _e, flush=True)
-    # =================== END TEMPORARY DIAGNOSTIC ===================
 
     return {
         "ayanamsa": ayan,
@@ -355,7 +331,7 @@ def divisional_chart(chart: dict, varga: str) -> dict:
 def compute_birth_chart(birth_local: datetime, lat: float, lon_east: float, sid_mode: str = "KRISHNAMURTI") -> dict:
     birth_utc = birth_local.astimezone(ZoneInfo("UTC"))
     planets = calc_sidereal_planets(birth_utc, sid_mode=sid_mode)
-    houses = calc_houses(birth_utc, lat, lon_east, sid_mode=sid_mode, _diag_label="natal")
+    houses = calc_houses(birth_utc, lat, lon_east, sid_mode=sid_mode)
 
     moon = next(p for p in planets if p.name == "Moon")
     nak = nakshatra_from_moon(moon.lon)
@@ -399,7 +375,7 @@ def compute_transit_chart(birth_local: datetime, lat: float, lon_east: float, tr
     dt_local = _target_date(birth_local, transit_year, month, day, hh, mm, ss)
     dt_utc = dt_local.astimezone(ZoneInfo("UTC"))
     planets = calc_sidereal_planets(dt_utc, sid_mode=sid_mode)
-    houses = calc_houses(dt_utc, lat, lon_east, sid_mode=sid_mode, _diag_label="transit")
+    houses = calc_houses(dt_utc, lat, lon_east, sid_mode=sid_mode)
     return {"planets": planets, "houses": houses, "dt_local": dt_local, "dt_utc": dt_utc, "sid_mode": sid_mode}
 
 def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float, target_year: int, sid_mode: str = "KRISHNAMURTI", month: int | None = None, day: int | None = None, hh: int | None = None, mm: int | None = None, ss: int | None = None) -> dict:
@@ -420,7 +396,7 @@ def compute_progressed_chart(birth_local: datetime, lat: float, lon_east: float,
     yearly_age_days = (yearly_target - birth_local).total_seconds() / 86400.0
     yearly_prog_local = birth_local + timedelta(days=yearly_age_days / DAYS_PER_YEAR)
     yearly_prog_utc = yearly_prog_local.astimezone(ZoneInfo("UTC"))
-    houses = calc_houses(yearly_prog_utc, lat, lon_east, sid_mode=sid_mode, _diag_label="progressed")
+    houses = calc_houses(yearly_prog_utc, lat, lon_east, sid_mode=sid_mode)
 
     return {"planets": planets, "houses": houses, "dt_local": progressed_local, "dt_utc": progressed_utc, "sid_mode": sid_mode}
 
