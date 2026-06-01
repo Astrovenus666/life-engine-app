@@ -424,16 +424,18 @@ def planet_abbr(name: str) -> str:
     }.get(name, name[:2])
 
 def fmt_deg(deg: float) -> str:
-    d = int(deg)
-    m_float = (deg - d) * 60
-    m = int(m_float)
-    s = int(round((m_float - m) * 60))
-    if s == 60:
-        s = 0
-        m += 1
-    if m == 60:
-        m = 0
-        d += 1
+    # Work in whole arcseconds to stay consistent with sign_of() (which arcsec-rounds
+    # the longitude before splitting sign+degree). Clamp into [0,30) so a value that
+    # rounds to exactly 30° never displays as "30:00:00" — sign_of has already rolled
+    # such a case into 0° of the next sign, so here we just guard the formatter.
+    total = int(round(deg * 3600.0))
+    if total >= 30 * 3600:
+        total = 30 * 3600 - 1  # 29:59:59 guard (sign_of handles the true rollover)
+    if total < 0:
+        total = 0
+    d = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
     return f"{d:02d}:{m:02d}:{s:02d}"
 
 def sign_index(sign: str) -> int:

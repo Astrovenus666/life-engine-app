@@ -68,6 +68,12 @@ def norm360(x: float) -> float:
 
 def sign_of(lon: float) -> tuple[str, float]:
     lon = norm360(lon)
+    # Round to arcsecond precision FIRST, so the sign and the degree-in-sign are
+    # derived from the same rounded value. Without this, a longitude like 89.99997°
+    # stays "Gemini" here but fmt_deg() later rounds the degree up to 30:00:00 — an
+    # impossible value. Rounding first makes it correctly roll to Cancer 00:00:00.
+    lon = round(lon * 3600.0) / 3600.0
+    lon = norm360(lon)  # in case rounding pushed 359.9999.. -> 360
     si = int(lon // 30)
     return SIGNS[si], lon - si * 30.0
 
@@ -87,7 +93,33 @@ def order_from_lord(lord: str) -> list[str]:
 def set_sidereal_mode(mode: str = "KRISHNAMURTI") -> None:
     mode = (mode or "").upper().strip()
     if mode in ("KP", "KRISHNAMURTI", "KRISHNAMURTI_AYANAMSHA"):
-        swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+        # Use "KP New" (Krishnamurti, epoch ~291 CE) to match RVA / Drikpanchang.
+        # Swiss Ephemeris' plain SIDM_KRISHNAMURTI is the OLD epoch-1900 variant,
+        # which sits ~7 arcmin off KP New and shifts every planet uniformly.
+        # Prefer the VP291 constant; fall back to its numeric mode, then old KP.
+        kp_mode = getattr(swe, "SIDM_KRISHNAMURTI_VP291", None)
+        if kp_mode is None:
+            kp_mode = 45  # Swiss Ephemeris numeric id for KP New (Krishnamurti VP291)
+        try:
+            swe.set_sid_mode(kp_mode)
+        except Exception:
+            swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+        # ---- TEMP DIAGNOSTIC (remove after verifying): print resolved KP ayanamsha ----
+        try:
+            import sys as _sys
+            global _KP_DIAG_DONE
+        except Exception:
+            pass
+        try:
+            if not globals().get("_KP_DIAG_DONE", False):
+                _testjd = swe.julday(2026, 6, 1, 8.0)  # ~ Jun 1 2026 13:30 IST in UT
+                _ay = swe.get_ayanamsa_ut(_testjd)
+                print("DIAG_AYAN[KP] | mode_tried=%s | ayanamsa_2026-06-01=%.5f deg"
+                      % (str(kp_mode), float(_ay)), file=__import__("sys").stderr, flush=True)
+                globals()["_KP_DIAG_DONE"] = True
+        except Exception as _e:
+            print("DIAG_AYAN error:", _e, flush=True)
+        # ---- END TEMP DIAGNOSTIC ----
     else:
         swe.set_sid_mode(swe.SIDM_LAHIRI)
 
