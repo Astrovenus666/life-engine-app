@@ -166,6 +166,25 @@ def calc_sidereal_planets(dt_utc: datetime, sid_mode: str = "KRISHNAMURTI") -> l
         s, d = sign_of(lon)
         out.append(PlanetPos(name=name, lon=lon, sign=s, deg_in_sign=d, lon_speed=lon_speed, retro=retro))
 
+    # ---- TEMP BROAD DIAGNOSTIC (remove after): inspect Jupiter near Cancer ingress ----
+    try:
+        import sys as _sys
+        if not globals().get("_JUP_DIAG_DONE", False):
+            _tjd = swe.julday(2026, 6, 1, 12.0)  # 2026-06-01 12:00 UT
+            _sid = swe.calc_ut(_tjd, swe.JUPITER, swe.FLG_SWIEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED)
+            _sid_xx = _sid[0] if isinstance(_sid, tuple) else _sid
+            _sid_ret = _sid[1] if isinstance(_sid, tuple) and len(_sid) > 1 else None
+            _tro = swe.calc_ut(_tjd, swe.JUPITER, swe.FLG_SWIEPH | swe.FLG_SPEED)
+            _tro_xx = _tro[0] if isinstance(_tro, tuple) else _tro
+            _ay = float(swe.get_ayanamsa_ut(_tjd))
+            print("DIAG_JUP | 2026-06-01_12UT | sid_lon=%.6f | speed=%.6f/day | trop_lon=%.6f | ayan=%.6f | retflag=%s | Cancer_starts_at_sid=90.0"
+                  % (float(_sid_xx[0]), float(_sid_xx[3]), float(_tro_xx[0]), _ay, str(_sid_ret)),
+                  file=_sys.stderr, flush=True)
+            globals()["_JUP_DIAG_DONE"] = True
+    except Exception as _e:
+        print("DIAG_JUP error:", _e, flush=True)
+    # ---- END BROAD DIAGNOSTIC ----
+
     # Ketu = Rahu + 180
     if rahu_lon is not None:
         ketu_lon = norm360(rahu_lon + 180.0)
