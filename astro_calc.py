@@ -27,25 +27,6 @@ try:
 except Exception:
     pass
 
-def _ephe_status() -> str:
-    """One-time check: are the .se1 data files actually being used (FLG_SWIEPH),
-    or did Swiss Ephemeris fall back to Moshier (files missing)? Logged once at
-    startup so we can confirm full precision is active."""
-    try:
-        import sys as _sys
-        _jd = swe.julday(2026, 6, 1, 12.0)
-        _r = swe.calc_ut(_jd, swe.JUPITER, swe.FLG_SWIEPH | swe.FLG_SPEED)
-        _ret = _r[1] if isinstance(_r, tuple) and len(_r) > 1 else 0
-        _used = "MOSHIER_FALLBACK(files NOT found)" if (_ret & 4) else "SWIEPH(data files OK)"
-        print(f"EPHE_STATUS | path={_EPHE_DIR} | ephemeris={_used}",
-              file=_sys.stderr, flush=True)
-        return _used
-    except Exception as _e:
-        print(f"EPHE_STATUS error: {_e}", flush=True)
-        return "error"
-
-_ephe_status()
-
 # ----------------------------
 # Constants
 # ----------------------------
@@ -142,37 +123,16 @@ def set_sidereal_mode(mode: str = "KRISHNAMURTI") -> None:
         except Exception:
             swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
     else:
-        swe.set_sid_mode(swe.SIDM_LAHIRI)
-        # ---- TEMP LAHIRI PROBE (remove after we pick the variant) ----
+        # Lahiri matched to Drikpanchang's "Lahiri / Chitra Paksha". Plain SIDM_LAHIRI
+        # sits ~17 arcsec below Drik; SIDM_LAHIRI_VP285 (epoch 285 CE) matches it to
+        # within ~5 arcsec. Fall back to plain Lahiri if the constant isn't available.
+        lah_mode = getattr(swe, "SIDM_LAHIRI_VP285", None)
+        if lah_mode is None:
+            lah_mode = swe.SIDM_LAHIRI
         try:
-            import sys as _sys
-            if not globals().get("_LAHIRI_PROBE_DONE", False):
-                _tjd = swe.julday(2026, 6, 1, 12.0)
-                _cands = {
-                    "LAHIRI": getattr(swe, "SIDM_LAHIRI", None),
-                    "LAHIRI_1940": getattr(swe, "SIDM_LAHIRI_1940", None),
-                    "LAHIRI_VP285": getattr(swe, "SIDM_LAHIRI_VP285", None),
-                    "LAHIRI_ICRC": getattr(swe, "SIDM_LAHIRI_ICRC", None),
-                    "TRUE_CITRA": getattr(swe, "SIDM_TRUE_CITRA", None),
-                    "TRUE_REVATI": getattr(swe, "SIDM_TRUE_REVATI", None),
-                }
-                _vals = {}
-                for _nm, _md in _cands.items():
-                    if _md is None:
-                        _vals[_nm] = "n/a"
-                        continue
-                    try:
-                        swe.set_sid_mode(_md)
-                        _vals[_nm] = round(float(swe.get_ayanamsa_ut(_tjd)), 6)
-                    except Exception:
-                        _vals[_nm] = "err"
-                print("DIAG_LAHIRI | 2026-06-01_12UT | variants=%s" % (_vals,),
-                      file=_sys.stderr, flush=True)
-                swe.set_sid_mode(swe.SIDM_LAHIRI)  # restore
-                globals()["_LAHIRI_PROBE_DONE"] = True
-        except Exception as _e:
-            print("DIAG_LAHIRI error:", _e, flush=True)
-        # ---- END LAHIRI PROBE ----
+            swe.set_sid_mode(lah_mode)
+        except Exception:
+            swe.set_sid_mode(swe.SIDM_LAHIRI)
 
 def _calc_ut_xx(jd: float, pid: int, flags: int):
     res = swe.calc_ut(jd, pid, flags)
