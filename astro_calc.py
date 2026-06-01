@@ -6,6 +6,38 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import swisseph as swe
+import os
+
+# Point Swiss Ephemeris at the bundled .se1 data files (ephe/ folder next to this
+# file). With these present, swe.calc_ut(..., FLG_SWIEPH) uses the full JPL-based
+# ephemeris (arc-second precision, matching RVA/Drik) instead of silently falling
+# back to the lower-precision built-in Moshier ephemeris.
+_EPHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ephe")
+try:
+    swe.set_ephe_path(_EPHE_DIR)
+except Exception:
+    # If the folder isn't found, Swiss Ephemeris falls back to Moshier (still works,
+    # just slightly less precise). We don't crash on a missing path.
+    pass
+
+def _ephe_status() -> str:
+    """One-time check: are the .se1 data files actually being used (FLG_SWIEPH),
+    or did Swiss Ephemeris fall back to Moshier (files missing)? Logged once at
+    startup so we can confirm full precision is active."""
+    try:
+        import sys as _sys
+        _jd = swe.julday(2026, 6, 1, 12.0)
+        _r = swe.calc_ut(_jd, swe.JUPITER, swe.FLG_SWIEPH | swe.FLG_SPEED)
+        _ret = _r[1] if isinstance(_r, tuple) and len(_r) > 1 else 0
+        _used = "MOSHIER_FALLBACK(files NOT found)" if (_ret & 4) else "SWIEPH(data files OK)"
+        print(f"EPHE_STATUS | path={_EPHE_DIR} | ephemeris={_used}",
+              file=_sys.stderr, flush=True)
+        return _used
+    except Exception as _e:
+        print(f"EPHE_STATUS error: {_e}", flush=True)
+        return "error"
+
+_ephe_status()
 
 # ----------------------------
 # Constants
@@ -93,43 +125,15 @@ def order_from_lord(lord: str) -> list[str]:
 def set_sidereal_mode(mode: str = "KRISHNAMURTI") -> None:
     mode = (mode or "").upper().strip()
     if mode in ("KP", "KRISHNAMURTI", "KRISHNAMURTI_AYANAMSHA"):
-        # Resolve "KP New" (epoch 291). Different pyswisseph versions expose this
-        # differently, so prefer the named constant; if absent, we discover the right
-        # numeric mode empirically (the diagnostic below prints candidates' values).
+        # KP New (Krishnamurti, epoch ~291 CE) — matches RVA / Drikpanchang.
+        # Prefer the named constant; fall back to plain Krishnamurti if unavailable.
         kp_mode = getattr(swe, "SIDM_KRISHNAMURTI_VP291", None)
         if kp_mode is None:
-            kp_mode = swe.SIDM_KRISHNAMURTI  # safe default until we confirm the number
+            kp_mode = swe.SIDM_KRISHNAMURTI
         try:
             swe.set_sid_mode(kp_mode)
         except Exception:
             swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
-        # ---- TEMP DISCOVERY DIAGNOSTIC (remove after we pick the mode) ----
-        try:
-            import sys as _sys
-            if not globals().get("_KP_DIAG_DONE", False):
-                _testjd = swe.julday(2026, 6, 1, 8.0)
-                # List KP-related attribute names this swe build exposes
-                _kp_attrs = [a for a in dir(swe) if "KRISHNAMURTI" in a.upper()]
-                # Probe candidate numeric modes and print each one's ayanamsa value.
-                # KP New should read ~24.21 deg for 2026-06-01; old KP ~24.149.
-                _probe = {}
-                for _m in [5, 40, 41, 42, 43, 44, 45, 46]:
-                    try:
-                        swe.set_sid_mode(_m)
-                        _probe[_m] = round(float(swe.get_ayanamsa_ut(_testjd)), 5)
-                    except Exception:
-                        _probe[_m] = "err"
-                print("DIAG_KP_DISCOVER | named_attrs=%s | resolved_mode=%s | probes=%s"
-                      % (_kp_attrs, str(kp_mode), _probe), file=_sys.stderr, flush=True)
-                # restore the chosen mode after probing
-                try:
-                    swe.set_sid_mode(kp_mode)
-                except Exception:
-                    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
-                globals()["_KP_DIAG_DONE"] = True
-        except Exception as _e:
-            print("DIAG_KP_DISCOVER error:", _e, flush=True)
-        # ---- END DISCOVERY DIAGNOSTIC ----
     else:
         swe.set_sid_mode(swe.SIDM_LAHIRI)
 
@@ -165,25 +169,6 @@ def calc_sidereal_planets(dt_utc: datetime, sid_mode: str = "KRISHNAMURTI") -> l
 
         s, d = sign_of(lon)
         out.append(PlanetPos(name=name, lon=lon, sign=s, deg_in_sign=d, lon_speed=lon_speed, retro=retro))
-
-    # ---- TEMP BROAD DIAGNOSTIC (remove after): inspect Jupiter near Cancer ingress ----
-    try:
-        import sys as _sys
-        if not globals().get("_JUP_DIAG_DONE", False):
-            _tjd = swe.julday(2026, 6, 1, 12.0)  # 2026-06-01 12:00 UT
-            _sid = swe.calc_ut(_tjd, swe.JUPITER, swe.FLG_SWIEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED)
-            _sid_xx = _sid[0] if isinstance(_sid, tuple) else _sid
-            _sid_ret = _sid[1] if isinstance(_sid, tuple) and len(_sid) > 1 else None
-            _tro = swe.calc_ut(_tjd, swe.JUPITER, swe.FLG_SWIEPH | swe.FLG_SPEED)
-            _tro_xx = _tro[0] if isinstance(_tro, tuple) else _tro
-            _ay = float(swe.get_ayanamsa_ut(_tjd))
-            print("DIAG_JUP | 2026-06-01_12UT | sid_lon=%.6f | speed=%.6f/day | trop_lon=%.6f | ayan=%.6f | retflag=%s | Cancer_starts_at_sid=90.0"
-                  % (float(_sid_xx[0]), float(_sid_xx[3]), float(_tro_xx[0]), _ay, str(_sid_ret)),
-                  file=_sys.stderr, flush=True)
-            globals()["_JUP_DIAG_DONE"] = True
-    except Exception as _e:
-        print("DIAG_JUP error:", _e, flush=True)
-    # ---- END BROAD DIAGNOSTIC ----
 
     # Ketu = Rahu + 180
     if rahu_lon is not None:
