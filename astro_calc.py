@@ -93,33 +93,43 @@ def order_from_lord(lord: str) -> list[str]:
 def set_sidereal_mode(mode: str = "KRISHNAMURTI") -> None:
     mode = (mode or "").upper().strip()
     if mode in ("KP", "KRISHNAMURTI", "KRISHNAMURTI_AYANAMSHA"):
-        # Use "KP New" (Krishnamurti, epoch ~291 CE) to match RVA / Drikpanchang.
-        # Swiss Ephemeris' plain SIDM_KRISHNAMURTI is the OLD epoch-1900 variant,
-        # which sits ~7 arcmin off KP New and shifts every planet uniformly.
-        # Prefer the VP291 constant; fall back to its numeric mode, then old KP.
+        # Resolve "KP New" (epoch 291). Different pyswisseph versions expose this
+        # differently, so prefer the named constant; if absent, we discover the right
+        # numeric mode empirically (the diagnostic below prints candidates' values).
         kp_mode = getattr(swe, "SIDM_KRISHNAMURTI_VP291", None)
         if kp_mode is None:
-            kp_mode = 45  # Swiss Ephemeris numeric id for KP New (Krishnamurti VP291)
+            kp_mode = swe.SIDM_KRISHNAMURTI  # safe default until we confirm the number
         try:
             swe.set_sid_mode(kp_mode)
         except Exception:
             swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
-        # ---- TEMP DIAGNOSTIC (remove after verifying): print resolved KP ayanamsha ----
+        # ---- TEMP DISCOVERY DIAGNOSTIC (remove after we pick the mode) ----
         try:
             import sys as _sys
-            global _KP_DIAG_DONE
-        except Exception:
-            pass
-        try:
             if not globals().get("_KP_DIAG_DONE", False):
-                _testjd = swe.julday(2026, 6, 1, 8.0)  # ~ Jun 1 2026 13:30 IST in UT
-                _ay = swe.get_ayanamsa_ut(_testjd)
-                print("DIAG_AYAN[KP] | mode_tried=%s | ayanamsa_2026-06-01=%.5f deg"
-                      % (str(kp_mode), float(_ay)), file=__import__("sys").stderr, flush=True)
+                _testjd = swe.julday(2026, 6, 1, 8.0)
+                # List KP-related attribute names this swe build exposes
+                _kp_attrs = [a for a in dir(swe) if "KRISHNAMURTI" in a.upper()]
+                # Probe candidate numeric modes and print each one's ayanamsa value.
+                # KP New should read ~24.21 deg for 2026-06-01; old KP ~24.149.
+                _probe = {}
+                for _m in [5, 40, 41, 42, 43, 44, 45, 46]:
+                    try:
+                        swe.set_sid_mode(_m)
+                        _probe[_m] = round(float(swe.get_ayanamsa_ut(_testjd)), 5)
+                    except Exception:
+                        _probe[_m] = "err"
+                print("DIAG_KP_DISCOVER | named_attrs=%s | resolved_mode=%s | probes=%s"
+                      % (_kp_attrs, str(kp_mode), _probe), file=_sys.stderr, flush=True)
+                # restore the chosen mode after probing
+                try:
+                    swe.set_sid_mode(kp_mode)
+                except Exception:
+                    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
                 globals()["_KP_DIAG_DONE"] = True
         except Exception as _e:
-            print("DIAG_AYAN error:", _e, flush=True)
-        # ---- END TEMP DIAGNOSTIC ----
+            print("DIAG_KP_DISCOVER error:", _e, flush=True)
+        # ---- END DISCOVERY DIAGNOSTIC ----
     else:
         swe.set_sid_mode(swe.SIDM_LAHIRI)
 
