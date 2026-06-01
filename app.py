@@ -498,6 +498,20 @@ def cusp_str_for_sign(cusp_info: dict, sign: str) -> str:
             parts.append(fmt_deg(d))
     return ", ".join(parts)
 
+def _ordinal(n: int) -> str:
+    """1->1st, 2->2nd, 3->3rd, 11->11th ... for BCP house labels."""
+    if 10 <= (n % 100) <= 20:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+def bcp_house_for_year(running_year: int) -> int:
+    """BCP house activated for a running year, counted from the natal Lagna and
+    cycling 1-12 (37->1, 38->2, ... 48->12, 49->1)."""
+    r = running_year % 12
+    return 12 if r == 0 else r
+
 def houses_in_sign(cusp_info: dict, sign: str, asc_sign: str | None = None) -> list:
     """Return the house numbers whose PLACIDUS cusp falls in the given sign, matching
     RVA: each house's Roman numeral appears in the sign where its actual Placidus cusp
@@ -884,7 +898,8 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
         """
         bcp_label = ""
         if activated and isinstance(bcp_age, int):
-            bcp_label = (f"<div class='bcplabel'>BCP 1st house · year [{bcp_age}]</div>")
+            _bh = bcp_house_for_year(bcp_age)
+            bcp_label = (f"<div class='bcplabel'>BCP {_ordinal(_bh)} house · year [{bcp_age}]</div>")
         items = sign_map[sign]
         body = "<br>".join(colored_span(pn, txt) for pn, txt in items) if items else "&nbsp;"
         return header + bcp_label + f"<div class='items'>{body}</div>"
@@ -1148,8 +1163,9 @@ def north_chart_html(chart_title: str, planets, houses, effective_mode: str, siz
                        f'font-size="{roman_fs - 2}" font-weight="700" text-anchor="middle">{age_str}</text>')
         # BCP "1st house" clarifier on the activated house (keeps transit Roman intact)
         if is_active and isinstance(bcp_age, int):
+            _bh = bcp_house_for_year(bcp_age)
             svg.append(f'<text x="{ax:.1f}" y="{roman_y + roman_fs + 2:.1f}" fill="#7CFF7C" '
-                       f'font-size="{roman_fs - 3}" font-weight="800" text-anchor="middle">BCP 1st · [{bcp_age}]</text>')
+                       f'font-size="{roman_fs - 3}" font-weight="800" text-anchor="middle">BCP {_ordinal(_bh)} · [{bcp_age}]</text>')
         # sign number + glyph
         svg.append(f'<text x="{ax:.1f}" y="{ay:.1f}" fill="{sign_col}" font-size="{sign_fs}" '
                    f'font-weight="800" text-anchor="middle">{sign_no} {glyph}</text>')
@@ -2094,10 +2110,10 @@ with topR:
 # =========================================================
 # Birth + Progressed charts
 # =========================================================
-head_l, head_r = st.columns([2.4, 1.0], vertical_alignment="bottom")
-with head_l:
-    st.subheader("Birth Chart")
-with head_r:
+st.subheader("Birth Chart")
+# Chart style centered above both charts
+_cs_l, _cs_c, _cs_r = st.columns([1, 1.4, 1])
+with _cs_c:
     chart_style = st.selectbox(
         "Chart style", ["South Indian", "North Indian"], index=0, key="chart_style",
         help="Switch the layout of all charts (birth, progressed, transit).",
@@ -2127,13 +2143,13 @@ with c1:
                  bchart["planets"], bchart["houses"], center_birth, effective_mode, size_mode="half")
 
 with c2:
-    # Spacer to match the height of the birth chart's "Birth chart" dropdown,
-    # so the progression chart lines up vertically with the birth chart.
+    # Match the vertical space of the birth column's "Birth chart" selectbox
+    # (label ~22px + input ~38px + gaps) so both charts share the same baseline.
     st.markdown(
-        '<div style="height:0.5rem;"></div>'
-        '<p style="font-size:14px;font-weight:400;margin:0 0 0.45rem 0;'
-        'line-height:1.6;color:rgba(250,250,250,0.55);">Progression (follows D1 year by year)</p>'
-        '<div style="height:38px;"></div>',
+        '<div style="height:1.65rem;"></div>'
+        '<p style="font-size:14px;font-weight:400;margin:0;height:38px;'
+        'display:flex;align-items:center;justify-content:center;text-align:center;'
+        'line-height:1.4;color:rgba(250,250,250,0.6);">Progression (follows D1 year by year)</p>',
         unsafe_allow_html=True,
     )
     _sel_m = int(st.session_state.get("sel_month", dob.month))
