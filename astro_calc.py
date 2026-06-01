@@ -143,6 +143,36 @@ def set_sidereal_mode(mode: str = "KRISHNAMURTI") -> None:
             swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
     else:
         swe.set_sid_mode(swe.SIDM_LAHIRI)
+        # ---- TEMP LAHIRI PROBE (remove after we pick the variant) ----
+        try:
+            import sys as _sys
+            if not globals().get("_LAHIRI_PROBE_DONE", False):
+                _tjd = swe.julday(2026, 6, 1, 12.0)
+                _cands = {
+                    "LAHIRI": getattr(swe, "SIDM_LAHIRI", None),
+                    "LAHIRI_1940": getattr(swe, "SIDM_LAHIRI_1940", None),
+                    "LAHIRI_VP285": getattr(swe, "SIDM_LAHIRI_VP285", None),
+                    "LAHIRI_ICRC": getattr(swe, "SIDM_LAHIRI_ICRC", None),
+                    "TRUE_CITRA": getattr(swe, "SIDM_TRUE_CITRA", None),
+                    "TRUE_REVATI": getattr(swe, "SIDM_TRUE_REVATI", None),
+                }
+                _vals = {}
+                for _nm, _md in _cands.items():
+                    if _md is None:
+                        _vals[_nm] = "n/a"
+                        continue
+                    try:
+                        swe.set_sid_mode(_md)
+                        _vals[_nm] = round(float(swe.get_ayanamsa_ut(_tjd)), 6)
+                    except Exception:
+                        _vals[_nm] = "err"
+                print("DIAG_LAHIRI | 2026-06-01_12UT | variants=%s" % (_vals,),
+                      file=_sys.stderr, flush=True)
+                swe.set_sid_mode(swe.SIDM_LAHIRI)  # restore
+                globals()["_LAHIRI_PROBE_DONE"] = True
+        except Exception as _e:
+            print("DIAG_LAHIRI error:", _e, flush=True)
+        # ---- END LAHIRI PROBE ----
 
 def _calc_ut_xx(jd: float, pid: int, flags: int):
     res = swe.calc_ut(jd, pid, flags)
