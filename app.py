@@ -2143,14 +2143,13 @@ with c1:
                  bchart["planets"], bchart["houses"], center_birth, effective_mode, size_mode="half")
 
 with c2:
-    # Match the vertical space of the birth column's "Birth chart" selectbox
-    # (label ~22px + input ~38px + gaps) so both charts share the same baseline.
-    st.markdown(
-        '<div style="height:1.65rem;"></div>'
-        '<p style="font-size:14px;font-weight:400;margin:0;height:38px;'
-        'display:flex;align-items:center;justify-content:center;text-align:center;'
-        'line-height:1.4;color:rgba(250,250,250,0.6);">Progression (follows D1 year by year)</p>',
-        unsafe_allow_html=True,
+    # Use the SAME widget type (a selectbox) as the birth column so both headers have
+    # identical height and the two charts share the exact same baseline. This one is
+    # disabled and purely a label/spacer — no pixel-height guessing.
+    st.selectbox(
+        "Progression (follows D1 year by year)",
+        ["— follows the birth D1 —"],
+        index=0, key="_prog_header_spacer", disabled=True,
     )
     _sel_m = int(st.session_state.get("sel_month", dob.month))
     center_prog = [
