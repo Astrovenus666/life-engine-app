@@ -8,16 +8,23 @@ from zoneinfo import ZoneInfo
 import swisseph as swe
 import os
 
-# Point Swiss Ephemeris at the bundled .se1 data files (ephe/ folder next to this
-# file). With these present, swe.calc_ut(..., FLG_SWIEPH) uses the full JPL-based
-# ephemeris (arc-second precision, matching RVA/Drik) instead of silently falling
-# back to the lower-precision built-in Moshier ephemeris.
-_EPHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ephe")
+# Point Swiss Ephemeris at the bundled .se1 data files. We check several locations
+# so it works whether the files are in an ephe/ subfolder OR directly in the repo
+# root (next to this file). With the files present, swe.calc_ut(..., FLG_SWIEPH)
+# uses the full JPL-based ephemeris (arc-second precision, matching RVA/Drik) instead
+# of silently falling back to the lower-precision built-in Moshier ephemeris.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_EPHE_CANDIDATES = [
+    os.path.join(_HERE, "ephe"),   # tidy subfolder, if present
+    _HERE,                          # repo root (files uploaded directly)
+    os.getcwd(),                    # current working dir, just in case
+]
+# Swiss Ephemeris accepts multiple paths separated by the OS path separator, and
+# searches all of them — so we hand it every candidate at once.
+_EPHE_DIR = os.pathsep.join(_EPHE_CANDIDATES)
 try:
     swe.set_ephe_path(_EPHE_DIR)
 except Exception:
-    # If the folder isn't found, Swiss Ephemeris falls back to Moshier (still works,
-    # just slightly less precise). We don't crash on a missing path.
     pass
 
 def _ephe_status() -> str:
