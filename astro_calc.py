@@ -169,6 +169,29 @@ def calc_houses(dt_utc: datetime, lat: float, lon_east: float, sid_mode: str = "
         s, d = sign_of(lon)
         cusp_info[h] = {"lon": lon, "sign": s, "deg": d}
 
+    # ===================== TEMPORARY DIAGNOSTIC (remove after) =====================
+    # Prints to Render logs so we can see whether the cusps[] array 10th matches the
+    # true MC (ascmc[1]). If they diverge, the cusps array isn't true Placidus on this
+    # build and we must derive angular cusps from ascmc instead.
+    try:
+        import sys as _sys
+        _c10_sign, _c10_deg = sign_of(cusps_sid[10])
+        _c1_sign, _c1_deg = sign_of(cusps_sid[1])
+        print(
+            "DIAG_HOUSES | len_cusps=%d | raw_cusps_first3=%s | "
+            "ASC(ascmc0)=%s %.4f | MC(ascmc1)=%s %.4f | "
+            "cusp1=%s %.4f | cusp10=%s %.4f | ayan=%.5f"
+            % (
+                len(cusp_vals), [round(float(x), 3) for x in cusp_vals[:3]],
+                asc_sign, asc_deg, mc_sign, mc_deg,
+                _c1_sign, _c1_deg, _c10_sign, _c10_deg, ayan,
+            ),
+            file=_sys.stderr, flush=True,
+        )
+    except Exception as _e:
+        print("DIAG_HOUSES error:", _e, flush=True)
+    # =================== END TEMPORARY DIAGNOSTIC ===================
+
     return {
         "ayanamsa": ayan,
         "cusps_sid": cusps_sid,
