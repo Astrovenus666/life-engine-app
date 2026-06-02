@@ -1462,6 +1462,87 @@ def generate_general_life_df(
     return pd.DataFrame(rows).sort_values("date_local").reset_index(drop=True)
 
 @st.cache_data(show_spinner=False)
+def generate_window_detail_df(
+    birth_local: datetime,
+    lat: float,
+    lon: float,
+    sid_mode_key: str,
+    progression_type: str,
+    win_start,
+    win_end,
+) -> pd.DataFrame:
+    """Compute FINE-GRAINED favorability points ONLY within the selected dasha
+    window (Option 1). The full-life graph stays coarse (3-monthly) for speed; this
+    runs only over the small selected span, so it adds little compute. Step size
+    adapts to window length so short PD windows get several points and draw a proper
+    line instead of a single dot."""
+    birth = compute_birth_chart(birth_local, lat, lon, sid_mode=sid_mode_key)
+    natal_lon = {p.name: float(p.lon) for p in birth["planets"]}
+    natal_mc_sid = float(birth["houses"]["mc_sid"])
+
+    span_days = max(1.0, (win_end - win_start).total_seconds() / 86400.0)
+    if span_days <= 200:
+        step_days = 7
+    elif span_days <= 800:
+        step_days = 10
+    elif span_days <= 3000:
+        step_days = 30
+    else:
+        step_days = 90
+
+    birth_naive = birth_local.replace(tzinfo=None)
+    rows = []
+    cur = win_start
+    while cur <= win_end:
+        age_years = (cur - birth_naive).total_seconds() / 86400.0 / 365.2425
+        if age_years < 0:
+            cur = cur + timedelta(days=step_days)
+            continue
+        if progression_type.startswith("Secondary"):
+            prog_local = birth_local + timedelta(days=age_years)
+            prog_utc = prog_local.astimezone(ZoneInfo("UTC"))
+            prog_planets = astro_calc.calc_sidereal_planets(prog_utc, sid_mode=sid_mode_key)
+            prog_houses = astro_calc.calc_houses(prog_utc, lat, lon, sid_mode=sid_mode_key)
+            mc_sid = float(prog_houses["mc_sid"])
+            prog_lon = {p.name: float(p.lon) for p in prog_planets}
+        else:
+            arc = float(age_years) * 1.0
+            mc_sid = norm360(natal_mc_sid + arc)
+            prog_lon = {nm: norm360(lon0 + arc) for nm, lon0 in natal_lon.items()}
+
+        score = 0.0
+        for tname, w_base in [("Sun", 1.40), ("Saturn", 1.70), ("Uranus", 1.50)]:
+            if tname not in natal_lon:
+                continue
+            res = classify_aspect(mc_sid, natal_lon[tname])
+            if not res:
+                continue
+            asp, delta = res
+            w = tri_weight(delta) * w_base
+            if asp in ("TRINE", "SEXT", "CONJ"):
+                score += w
+            elif asp in ("SQUARE", "OPP"):
+                score -= w
+        for p_name, p_lon in prog_lon.items():
+            for n_name, n_lon in natal_lon.items():
+                res = classify_aspect(float(p_lon), float(n_lon))
+                if not res:
+                    continue
+                asp, delta = res
+                w = tri_weight(delta)
+                if asp in ("TRINE", "SEXT"):
+                    score += 1.0 * w
+                elif asp in ("SQUARE", "OPP"):
+                    score -= 1.0 * w
+                elif asp == "CONJ":
+                    score += 0.25 * w
+
+        rows.append({"date_local": cur, "score_total": float(score)})
+        cur = cur + timedelta(days=step_days)
+
+    return pd.DataFrame(rows).sort_values("date_local").reset_index(drop=True)
+
+@st.cache_data(show_spinner=False)
 def generate_career_df(
     birth_local: datetime,
     lat: float,
@@ -2326,7 +2407,7 @@ def plot_engine(df: pd.DataFrame, title: str, key_prefix: str):
 
     st.plotly_chart(fig_full, use_container_width=True, key=f"{key_prefix}_full")
 
-    st.markdown("### Detail inside selected window (3 months)")
+    st.markdown("### Detail inside selected window")
 
     if not sel:
         st.info("Select MD (and optionally AD/PD) from the left, then the detail view will appear here.")
@@ -2334,19 +2415,36 @@ def plot_engine(df: pd.DataFrame, title: str, key_prefix: str):
 
     s0 = to_naive_ts(sel.get("start"))
     s1 = to_naive_ts(sel.get("end"))
-    window_df = df[(df["date_local"] >= s0) & (df["date_local"] <= s1)].copy()
-    if window_df.empty:
-        st.warning("No data points in this selected window.")
-        return
 
-    detail = (
-        window_df.set_index("date_local")["score_total"]
-        .resample("3MS")
-        .mean()
-        .dropna()
-        .reset_index()
-    )
-    detail.columns = ["date_local", "score_total"]
+    # Option 1: compute FINE points only for this selected window (keeps the full
+    # graph fast). Falls back to the coarse window data if anything is unavailable.
+    _bl = st.session_state.get("birth_local")
+    _lat = st.session_state.get("lat")
+    _lon = st.session_state.get("lon")
+    _sid = st.session_state.get("sid_mode_key")
+    _prog = st.session_state.get("progression_type")
+    detail = None
+    if all(v is not None for v in (_bl, _lat, _lon, _sid, _prog)):
+        try:
+            detail = generate_window_detail_df(_bl, _lat, _lon, _sid, _prog, s0, s1)
+        except Exception:
+            detail = None
+
+    if detail is None or detail.empty:
+        # Fallback: coarse window data (old behaviour)
+        window_df = df[(df["date_local"] >= s0) & (df["date_local"] <= s1)].copy()
+        if window_df.empty:
+            st.warning("No data points in this selected window.")
+            return
+        detail = (
+            window_df.set_index("date_local")["score_total"]
+            .resample("MS")
+            .mean()
+            .dropna()
+            .reset_index()
+        )
+        detail.columns = ["date_local", "score_total"]
+
     detail["life_0_1000"] = score_to_0_1000(detail["score_total"], detail["date_local"], baseline_year=by)
 
     fig_det = go.Figure()
