@@ -2388,6 +2388,35 @@ def plot_engine(df: pd.DataFrame, title: str, key_prefix: str):
 
     st.plotly_chart(fig_det, use_container_width=True, key=f"{key_prefix}_detail")
 
+    # Gentle, non-deterministic reflection when the recent trend is declining.
+    # This is intentionally NOT a prediction or prescriptive advice — it offers a
+    # supportive framing and invites a personalised consultation, keeping the
+    # interpretation in the hands of a human astrologer.
+    try:
+        vals = detail["life_0_1000"].tolist()
+        if len(vals) >= 2:
+            recent = vals[-3:] if len(vals) >= 3 else vals
+            declining = recent[-1] < recent[0]
+            low_level = recent[-1] < 450  # on the lower half of the 0–1000 scale
+            if declining or low_level:
+                st.markdown(
+                    "<div style='margin-top:10px;padding:14px 16px;border-radius:10px;"
+                    "background:rgba(255,211,122,.08);border:1px solid rgba(255,211,122,.30);"
+                    "color:#f4e6c8;font-size:14px;line-height:1.6;'>"
+                    "🌙 <strong>A gentler phase.</strong> This stretch of the graph looks "
+                    "more testing than smooth — often a time that rewards patience, planning "
+                    "and steady effort rather than forcing big moves. These are tendencies, "
+                    "not fixed outcomes; how a period unfolds depends on the whole chart and "
+                    "your choices. For a personalised reading of what this phase means for "
+                    "<em>you</em>, you're welcome to "
+                    "<a href='https://rmastrovenus.com' target='_blank' style='color:#ffd37a;'>"
+                    "consult RM Astro Venus</a>."
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+    except Exception:
+        pass
+
 tab1, tab2 = st.tabs(["Life (General)", "Career / Profession"])
 with tab1:
     plot_engine(life_df, "Life Path (General)", "life")
