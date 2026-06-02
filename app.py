@@ -2388,32 +2388,52 @@ def plot_engine(df: pd.DataFrame, title: str, key_prefix: str):
 
     st.plotly_chart(fig_det, use_container_width=True, key=f"{key_prefix}_detail")
 
-    # Gentle, non-deterministic reflection when the recent trend is declining.
-    # This is intentionally NOT a prediction or prescriptive advice — it offers a
-    # supportive framing and invites a personalised consultation, keeping the
-    # interpretation in the hands of a human astrologer.
+    # Reflection that genuinely tracks the CURRENT graph shown (it reads the same
+    # detail values that are plotted, so it always matches what the user sees and
+    # updates whenever ayanamsha / progression / dasha change). It is deliberately
+    # non-deterministic — tendencies, not predictions — and always routes a deeper
+    # reading to a human astrologer.
     try:
         vals = detail["life_0_1000"].tolist()
         if len(vals) >= 2:
-            recent = vals[-3:] if len(vals) >= 3 else vals
-            declining = recent[-1] < recent[0]
-            low_level = recent[-1] < 450  # on the lower half of the 0–1000 scale
-            if declining or low_level:
-                st.markdown(
-                    "<div style='margin-top:10px;padding:14px 16px;border-radius:10px;"
-                    "background:rgba(255,211,122,.08);border:1px solid rgba(255,211,122,.30);"
-                    "color:#f4e6c8;font-size:14px;line-height:1.6;'>"
-                    "🌙 <strong>A gentler phase.</strong> This stretch of the graph looks "
-                    "more testing than smooth — often a time that rewards patience, planning "
-                    "and steady effort rather than forcing big moves. These are tendencies, "
-                    "not fixed outcomes; how a period unfolds depends on the whole chart and "
-                    "your choices. For a personalised reading of what this phase means for "
-                    "<em>you</em>, you're welcome to "
-                    "<a href='https://rmastrovenus.com' target='_blank' style='color:#ffd37a;'>"
-                    "consult RM Astro Venus</a>."
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
+            start, end = vals[0], vals[-1]
+            avg = sum(vals) / len(vals)
+            slope = end - start                      # overall direction across window
+            span = max(vals) - min(vals)             # how much it actually moves
+
+            # Decide the phase from the ACTUAL plotted line.
+            if span < 40:
+                tone = "steady"
+            elif slope > 0:
+                tone = "rising"
+            else:
+                tone = "dipping"
+
+            if tone == "rising":
+                msg = ("✨ <strong>A more supportive phase.</strong> Over this window the "
+                       "line generally rises — a stretch that tends to favour growth, "
+                       "opportunities and smoother progress. Good timing for initiative, "
+                       "provided the rest of the chart agrees.")
+            elif tone == "dipping":
+                msg = ("🌙 <strong>A more testing phase.</strong> Over this window the line "
+                       "generally eases down — often a time that rewards patience, planning "
+                       "and steady effort over forcing big moves.")
+            else:
+                msg = ("⚖️ <strong>A steady, mixed phase.</strong> The line stays fairly level "
+                       "here — neither strongly supportive nor strongly testing — so timing "
+                       "matters less than consistency and good judgement.")
+
+            st.markdown(
+                "<div style='margin-top:10px;padding:14px 16px;border-radius:10px;"
+                "background:rgba(255,211,122,.08);border:1px solid rgba(255,211,122,.30);"
+                "color:#f4e6c8;font-size:14px;line-height:1.6;'>"
+                f"{msg} <span style='opacity:.85;'>These are tendencies for the selected "
+                "period and system, not fixed outcomes — how it unfolds depends on the whole "
+                "chart and your choices. For a personalised reading, you're welcome to "
+                "<a href='https://rmastrovenus.com' target='_blank' style='color:#ffd37a;'>"
+                "consult RM Astro Venus</a>.</span></div>",
+                unsafe_allow_html=True,
+            )
     except Exception:
         pass
 
@@ -2422,5 +2442,3 @@ with tab1:
     plot_engine(life_df, "Life Path (General)", "life")
 with tab2:
     plot_engine(career_df, "Career / Profession Engine", "career")
-
-st.caption("Tip: type a city name and the best match auto-selects; refine with the State / Place dropdown.")
