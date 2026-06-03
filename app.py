@@ -1778,6 +1778,31 @@ def score_to_0_1000(series: pd.Series, dates: pd.Series, baseline_year: int | No
     scaled = 500.0 + (centered / max_abs) * 500.0
     return scaled.clip(0, 1000)
 
+def norm_params_from_full(series: pd.Series, dates: pd.Series, baseline_year: int | None):
+    """Compute (baseline, max_abs) from the FULL lifetime data so the detail window
+    can be scaled on the SAME axis as the main graph (prevents the detail view from
+    renormalizing against itself, which distorts shape/direction)."""
+    s = pd.to_numeric(series, errors="coerce")
+    d = pd.to_datetime(dates, errors="coerce")
+    ok = s.notna() & d.notna()
+    if ok.sum() == 0:
+        return None
+    if baseline_year is None:
+        baseline = float(s[ok].median())
+    else:
+        base_mask = ok & (d.dt.year == int(baseline_year))
+        baseline = float(s[base_mask].mean()) if base_mask.sum() else float(s[ok].median())
+    centered = s - baseline
+    max_abs = float(np.nanmax(np.abs(centered[ok])))
+    if not np.isfinite(max_abs) or max_abs == 0:
+        return None
+    return baseline, max_abs
+
+def apply_norm_params(series: pd.Series, baseline: float, max_abs: float) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce")
+    scaled = 500.0 + ((s - baseline) / max_abs) * 500.0
+    return scaled.clip(0, 1000)
+
 # =========================================================
 # Recompute
 # =========================================================
@@ -2445,7 +2470,15 @@ def plot_engine(df: pd.DataFrame, title: str, key_prefix: str):
         )
         detail.columns = ["date_local", "score_total"]
 
-    detail["life_0_1000"] = score_to_0_1000(detail["score_total"], detail["date_local"], baseline_year=by)
+    # Normalize the detail window on the SAME axis as the full lifetime graph,
+    # so switching dasha/ayanamsha doesn't renormalize the window against itself
+    # (which previously distorted the shape and up/down direction).
+    _np = norm_params_from_full(df["score_total"], df["date_local"], baseline_year=by)
+    if _np is not None:
+        _baseline, _max_abs = _np
+        detail["life_0_1000"] = apply_norm_params(detail["score_total"], _baseline, _max_abs)
+    else:
+        detail["life_0_1000"] = score_to_0_1000(detail["score_total"], detail["date_local"], baseline_year=by)
 
     fig_det = go.Figure()
     fig_det.add_trace(go.Scatter(
