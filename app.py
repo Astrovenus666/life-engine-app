@@ -935,7 +935,7 @@ def south_chart_html(chart_title: str, planets, houses, center_lines: list[str],
 
         header = f"""
         <div class="hrow">
-          <span class="{cls}">{roman}{age_tag}</span>
+          <span class="hnum">{roman}</span><span class="{cls}">{age_tag}</span>
           <span class="glyph">{glyph}</span>
           <span class="cusp">{cusp}</span>
         </div>
@@ -1188,22 +1188,16 @@ def north_chart_html(chart_title: str, planets, houses, effective_mode: str, siz
             if age_here >= 0:
                 age_str = f"[{age_here}]"
 
-        if is_active:
-            # green glowing pill behind the Roman numeral
-            rw = roman_fs * 2.2
-            rh = roman_fs * 1.5
-            svg.append(
-                f'<rect x="{ax - rw/2:.1f}" y="{roman_y - roman_fs:.1f}" width="{rw:.1f}" height="{rh:.1f}" '
-                f'rx="5" ry="5" fill="#00ff88" filter="url(#bcpglow)"/>'
-            )
-            svg.append(f'<text x="{ax:.1f}" y="{roman_y:.1f}" fill="#04140b" '
-                       f'font-size="{roman_fs}" font-weight="900" text-anchor="middle">{ROMAN[h]}</text>')
-        else:
-            svg.append(f'<text x="{ax:.1f}" y="{roman_y:.1f}" fill="{roman_col}" '
-                       f'font-size="{roman_fs}" font-weight="900" text-anchor="middle">{ROMAN[h]}</text>')
-        # small age tag beside the Roman numeral (dim grey)
+        # Roman numeral is ALWAYS plain green (never highlighted) — it comes from
+        # the transit for the chosen day/time, so highlighting it could be mistaken
+        # for the BCP activation. The BCP activation is shown on the age tag + label.
+        svg.append(f'<text x="{ax:.1f}" y="{roman_y:.1f}" fill="{roman_col}" '
+                   f'font-size="{roman_fs}" font-weight="900" text-anchor="middle">{ROMAN[h]}</text>')
+        # small age tag beside the Roman numeral — highlighted green when this house
+        # is the BCP-activated one, dim grey otherwise.
         if age_str:
-            svg.append(f'<text x="{ax:.1f}" y="{roman_y - roman_fs - 1:.1f}" fill="#9aa0a6" '
+            age_fill = "#00ff88" if is_active else "#9aa0a6"
+            svg.append(f'<text x="{ax:.1f}" y="{roman_y - roman_fs - 1:.1f}" fill="{age_fill}" '
                        f'font-size="{roman_fs - 2}" font-weight="700" text-anchor="middle">{age_str}</text>')
         # BCP "1st house" clarifier on the activated house (keeps transit Roman intact)
         if is_active and isinstance(bcp_age, int):
