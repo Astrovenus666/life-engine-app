@@ -648,39 +648,81 @@ def _get_geocoder():
     # 1 request/sec keeps us within Nominatim's usage policy.
     return RateLimiter(geolocator.geocode, min_delay_seconds=1.0, swallow_exceptions=True)
 
-@st.cache_data(show_spinner=False)
-def geocode_place(query: str, country_name: str):
-    """Online fallback via Nominatim — only used when the offline list misses.
-    Returns a list of candidate dicts: name, state, district, display, lat, lon."""
-    q = (query or "").strip()
-    if not q:
-        return []
-    geocode = _get_geocoder()
+@st.cache_resource
+def _get_locationiq_geocoder():
+    """LocationIQ geocoder (reliable, finds small towns/villages). Uses the
+    LOCATIONIQ_KEY from Streamlit secrets / environment. Returns None if no key,
+    so we gracefully fall back to Nominatim."""
+    key = None
     try:
-        results = geocode(
-            f"{q}, {country_name}",
-            exactly_one=False,
-            addressdetails=True,
-            limit=8,
-        ) or []
+        key = st.secrets.get("LOCATIONIQ_KEY", None)
     except Exception:
-        results = []
+        key = None
+    if not key:
+        import os
+        key = os.environ.get("LOCATIONIQ_KEY")
+    if not key:
+        return None
+    try:
+        from geopy.geocoders import LocationIQ
+        geo = LocationIQ(api_key=key, user_agent="life_path_graph_app")
+        return RateLimiter(geo.geocode, min_delay_seconds=0.6, swallow_exceptions=True)
+    except Exception:
+        return None
+
+def _parse_geo_results(results, query):
+    """Normalize geopy results (LocationIQ or Nominatim) to candidate dicts."""
     out = []
-    for r in results:
-        addr = (r.raw or {}).get("address", {})
+    for r in results or []:
+        addr = (getattr(r, "raw", {}) or {}).get("address", {})
         town = (addr.get("city") or addr.get("town") or addr.get("village")
-                or addr.get("hamlet") or addr.get("municipality") or q.title())
+                or addr.get("hamlet") or addr.get("municipality")
+                or addr.get("county") or query.title())
         district = (addr.get("state_district") or addr.get("county") or "")
         state = addr.get("state") or ""
         label_parts = [p for p in [town, district, state] if p]
+        try:
+            lat, lon = float(r.latitude), float(r.longitude)
+        except Exception:
+            continue
         out.append({
-            "name": town,
-            "district": district,
-            "state": state,
+            "name": town, "district": district, "state": state,
             "display": ", ".join(label_parts) if label_parts else r.address,
-            "lat": float(r.latitude),
-            "lon": float(r.longitude),
+            "lat": lat, "lon": lon,
         })
+    return out
+
+@st.cache_data(show_spinner=False)
+def geocode_place(query: str, country_name: str):
+    """Online place search for ANY town/village/district/city.
+    Tries LocationIQ first (reliable, deep coverage), then Nominatim as a
+    fallback, so even small places resolve. Returns candidate dicts."""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    out = []
+    # 1) LocationIQ (primary, if key configured)
+    liq = _get_locationiq_geocoder()
+    if liq is not None:
+        try:
+            res = liq(f"{q}, {country_name}", exactly_one=False,
+                      addressdetails=True, limit=10) or []
+            out = _parse_geo_results(res, q)
+        except Exception:
+            out = []
+
+    # 2) Nominatim fallback (if LocationIQ missing or returned nothing)
+    if not out:
+        geocode = _get_geocoder()
+        try:
+            res = geocode(f"{q}, {country_name}", exactly_one=False,
+                          addressdetails=True, limit=8) or []
+            out = _parse_geo_results(res, q)
+        except Exception:
+            out = []
+
+    # de-duplicate by display label
     seen, uniq = set(), []
     for o in out:
         if o["display"] in seen:
@@ -1884,8 +1926,8 @@ if not place_query:
 if not candidates:
     st.warning(
         f"Couldn't find “{place_query}” in {country}. "
-        "Check the spelling, or try the nearest town/district. "
-        "If it's a small village, click **Search online**."
+        "Check the spelling, or try the nearest town/district, "
+        "then click **Search online** to look it up worldwide."
     )
     st.stop()
 
