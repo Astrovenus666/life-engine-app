@@ -294,6 +294,72 @@ st.markdown(
     }
 
     /* ---------------------------------------------------------------
+       NEW STREAMLIT (1.60+) DROPDOWN / DATE-FIELD DARK FIX.
+       Newer Streamlit no longer uses the old baseweb markup the rules
+       above target, so dropdowns/date field fell back to the light
+       theme (white box, dark text, invisible menu text). These rules
+       use the new data-testid / role markers. Same dark box + light
+       text as the Name / Time-of-birth fields.
+       --------------------------------------------------------------- */
+    .stApp [data-testid="stSelectbox"] div:has(> input),
+    .stApp [data-testid="stDateInputField"] {
+        background-color: #1c1c1f !important;
+        border-color: #3a3a40 !important;
+    }
+    .stApp [data-testid="stSelectbox"] input,
+    .stApp [data-testid="stSelectbox"] button {
+        color: #f5f5f5 !important;
+        -webkit-text-fill-color: #f5f5f5 !important;
+        background-color: transparent !important;
+        caret-color: #f5f5f5 !important;
+    }
+    .stApp [data-testid="stSelectbox"] button svg { color: #f5f5f5 !important; fill: #f5f5f5 !important; }
+    .stApp [data-testid="stDateInputField"],
+    .stApp [data-testid="stDateInputField"] * {
+        color: #f5f5f5 !important;
+        -webkit-text-fill-color: #f5f5f5 !important;
+    }
+    /* open dropdown list (rendered outside the widget) */
+    [data-testid="stSelectboxVirtualDropdown"] {
+        background-color: #1c1c1f !important;
+        border: 1px solid #2c2c30 !important;
+    }
+    [data-testid="stSelectboxVirtualDropdown"] [role="listbox"],
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"] {
+        background-color: transparent !important;
+    }
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"],
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"] * {
+        color: #f5f5f5 !important;
+        -webkit-text-fill-color: #f5f5f5 !important;
+    }
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"][data-hovered] [data-item-hl],
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"][data-focused] [data-item-hl],
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"][aria-selected="true"] [data-item-hl] {
+        background-color: rgba(0, 200, 140, 0.30) !important;
+    }
+    /* date picker calendar popup */
+    [data-testid="stDateInputCalendar"] {
+        background-color: #1c1c1f !important;
+        border: 1px solid #2c2c30 !important;
+    }
+    [data-testid="stDateInputCalendar"],
+    [data-testid="stDateInputCalendar"] * {
+        color: #f5f5f5 !important;
+    }
+    /* sidebar (Mahadasha / Antardasha / Pratyantardasha): keep transparent + green border */
+    .stApp section[data-testid="stSidebar"] [data-testid="stSelectbox"] div:has(> input) {
+        background-color: transparent !important;
+        border: 1.6px solid #1e9e5a !important;
+        border-radius: 10px !important;
+    }
+    .stApp section[data-testid="stSidebar"] [data-testid="stSelectbox"] input,
+    .stApp section[data-testid="stSidebar"] [data-testid="stSelectbox"] button {
+        color: #cdeedd !important;
+        -webkit-text-fill-color: #cdeedd !important;
+    }
+
+    /* ---------------------------------------------------------------
        MOBILE LAYOUT FIX. On narrow screens Streamlit's horizontal
        columns squeeze and misalign (the HH/MM/SS boxes, the top row).
        Force columns to stack vertically and go full width on phones.
