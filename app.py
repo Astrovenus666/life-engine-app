@@ -2183,11 +2183,11 @@ with c1:
 with c2:
     # Use the SAME widget type (a selectbox) as the birth column so both headers have
     # identical height and the two charts share the exact same baseline. This one is
-    # disabled and purely a label/spacer — no pixel-height guessing.
+    # enabled (single option) and purely a label/spacer — no pixel-height guessing.
     st.selectbox(
         "Progression (follows D1 year by year)",
         ["— follows the birth D1 —"],
-        index=0, key="_prog_header_spacer", disabled=True,
+        index=0, key="_prog_header_spacer",
     )
     _sel_m = int(st.session_state.get("sel_month", dob.month))
     center_prog = [
